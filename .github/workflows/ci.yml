@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Keep the required branch-protection check stable even as diagnostics evolve:
+# CI / verify is the only job that should be required by repository policy.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  fast:
+    name: fast
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Scan current tree and reachable history for secrets
+        run: ./scripts/check-secrets
+      - name: Run fast deterministic verification
+        run: ./scripts/verify
+
+  race:
+    name: race
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run race diagnostics
+        run: go test -race -count=1 ./...
+
+  static:
+    name: static analysis
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run pinned static analysis
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+      - name: Run pinned shell analysis
+        run: |
+          docker run --rm \
+            --volume "$PWD:/mnt:ro" \
+            --workdir /mnt \
+            koalaman/shellcheck@sha256:2097951f02e735b613f4a34de20c40f937a6c8f18ecb170612c88c34517221fb \
+            scripts/* deploy/release.sh
+      - name: Validate GitHub workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+      - name: Compile optional live integration path
+        run: go test -tags integration ./... -run '^$'
+
+  package:
+    name: release package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install locked browser dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build one exact amd64 artifact
+        env:
+          CGO_ENABLED: '0'
+          GOARCH: amd64
+          GOOS: linux
+          HERDR_WEB_CLIENT_VERSION: v0.0.0-ci
+        run: ./scripts/build "${{ runner.temp }}/herdr-web-client-linux-amd64"
+      - name: Verify both release platforms and sandbox installation
+        run: ./scripts/verify-release "${{ runner.temp }}/herdr-web-client-linux-amd64" v0.0.0-ci
+
+  browser:
+    name: browser
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install locked browser dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install Playwright Chromium
+        run: bunx --no-install playwright install --with-deps chromium
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the exact browser-server binary
+        run: ./scripts/build build/herdr-web-client
+      - name: Run Chromium diagnostics against that binary
+        run: ./scripts/verify-browser build/herdr-web-client
+
+  verify:
+    name: verify
+    if: ${{ always() }}
+    needs:
+      - fast
+      - race
+      - static
+      - package
+      - browser
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate diagnostic results
+        env:
+          FAST_RESULT: ${{ needs.fast.result }}
+          RACE_RESULT: ${{ needs.race.result }}
+          STATIC_RESULT: ${{ needs.static.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          set -Eeuo pipefail
+          printf 'fast=%s race=%s static=%s package=%s browser=%s\n' \
+            "$FAST_RESULT" "$RACE_RESULT" "$STATIC_RESULT" "$PACKAGE_RESULT" "$BROWSER_RESULT"
+          [[ "$FAST_RESULT" == success && "$RACE_RESULT" == success && \
+             "$STATIC_RESULT" == success && "$PACKAGE_RESULT" == success && \
+             "$BROWSER_RESULT" == success ]]

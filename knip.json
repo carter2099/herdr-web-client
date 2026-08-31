@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/knip@6.33.0/schema.json",
+  "entry": [
+    "web/app.js",
+    "web/**/*.test.js",
+    "e2e/**/*.spec.mjs",
+    "e2e/contract-reporter.mjs"
+  ],
+  "project": ["web/**/*.js", "e2e/**/*.mjs"],
+  "ignore": ["web/dist/**"],
+  "ignoreDependencies": ["@biomejs/biome"],
+  "include": ["files", "dependencies", "devDependencies", "unresolved"]
+}

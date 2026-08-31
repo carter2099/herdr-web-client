@@ -1,0 +1,7 @@
+node_modules/
+/build/
+/playwright-report/
+/test-results/
+herdr-web-client
+coverage.out
+.env

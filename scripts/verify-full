@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+ARTIFACT=$ROOT/build/herdr-web-client
+
+if (( $# != 0 )); then
+  printf 'usage: %s\n' "${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
+
+cd -- "$ROOT"
+export HERDR_WEB_CLIENT_VERSION=${HERDR_WEB_CLIENT_VERSION:-v0.0.0-verify}
+
+host_os=$(go env GOHOSTOS)
+host_arch=$(go env GOHOSTARCH)
+if [[ "$host_os" != linux || ("$host_arch" != amd64 && "$host_arch" != arm64) ]]; then
+  printf 'verify-full requires a Linux amd64 or arm64 host; found %s/%s\n' "$host_os" "$host_arch" >&2
+  exit 1
+fi
+
+GOOS=linux GOARCH=$host_arch CGO_ENABLED=0 scripts/verify
+
+printf '%s\n' '== pinned shell analysis =='
+shellcheck_version=$(shellcheck --version)
+if [[ "$shellcheck_version" != *$'\nversion: 0.10.0'* ]]; then
+  printf 'ShellCheck 0.10.0 is required\n' >&2
+  exit 1
+fi
+shellcheck scripts/* deploy/release.sh
+
+printf '%s\n' '== pinned static analysis =='
+go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+
+printf '%s\n' '== pinned workflow validation =='
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11
+
+printf '%s\n' '== race-enabled Go tests =='
+go test -race ./... -count=1
+
+printf '%s\n' '== integration-tag compilation =='
+go test -tags integration ./... -run '^$'
+
+printf '%s\n' '== fixed protocol property corpus =='
+go test . -run '^TestProtocolDecoderCorpus$' -count=1
+
+printf '%s\n' '== current and historical secret scans =='
+scripts/check-secrets
+printf '%s\n' '== deterministic release package and sandbox installation =='
+scripts/verify-release "$ARTIFACT" "$HERDR_WEB_CLIENT_VERSION"
+
+
+printf '%s\n' '== exact embedded artifact browser check =='
+if [[ ! -x "$ARTIFACT" ]]; then
+  printf 'expected executable artifact %s\n' "$ARTIFACT" >&2
+  exit 1
+fi
+if [[ ! -x "$ROOT/scripts/verify-browser" ]]; then
+  printf 'missing executable scripts/verify-browser\n' >&2
+  exit 1
+fi
+scripts/verify-browser "$ARTIFACT"
