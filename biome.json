@@ -1,0 +1,64 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
+  "files": {
+    "includes": [
+      "build.mjs",
+      "package.json",
+      "biome.json",
+      "knip.json",
+      "playwright.config.mjs",
+      "e2e/**/*.mjs",
+      "web/**/*.js",
+      "web/**/*.css",
+      "!web/dist"
+    ]
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineEnding": "lf"
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "single",
+      "jsxQuoteStyle": "double",
+      "trailingCommas": "all",
+      "semicolons": "always"
+    },
+    "globals": [
+      "AbortController",
+      "AudioContext",
+      "Bun",
+      "Buffer",
+      "DOMException",
+      "Event",
+      "URL",
+      "clearInterval",
+      "clearTimeout",
+      "document",
+      "fetch",
+      "navigator",
+      "process",
+      "setInterval",
+      "setTimeout",
+      "TextDecoder",
+      "TextEncoder",
+      "WebSocket",
+      "window"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": {
+        "noImportantStyles": "off"
+      },
+      "style": {
+        "noDescendingSpecificity": "off"
+      }
+    }
+  }
+}

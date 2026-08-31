@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+
+if (( $# != 0 )); then
+  printf 'usage: %s\n' "${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
+
+cd -- "$ROOT"
+go test . -count=1 -run '^(TestSourceContainsNoStalePersonalOrLegacyIdentifiers|TestBrowserTitleIsExactlyHerdr)$'

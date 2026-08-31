@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+umask 022
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+usage() {
+  printf 'usage: %s VERSION AMD64_BINARY ARM64_BINARY OUTPUT_DIR\n' "$(basename -- "$0")" >&2
+  printf '  VERSION must be vMAJOR.MINOR.PATCH[-suffix].\n' >&2
+}
+
+if [[ $# -ne 4 ]]; then
+  usage
+  exit 2
+fi
+
+version_tag=$1
+amd64_binary=$2
+arm64_binary=$3
+output_dir=$4
+
+semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+if [[ ! $version_tag =~ $semver_re ]]; then
+  printf 'invalid release tag: %s\n' "$version_tag" >&2
+  usage
+  exit 2
+fi
+if ! git check-ref-format "refs/tags/$version_tag" >/dev/null; then
+  printf 'release tag is not a valid Git ref: %s\n' "$version_tag" >&2
+  exit 2
+fi
+
+resolve_path() {
+  case $1 in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$ROOT_DIR" "$1" ;;
+  esac
+}
+
+amd64_binary=$(resolve_path "$amd64_binary")
+arm64_binary=$(resolve_path "$arm64_binary")
+output_dir=$(resolve_path "$output_dir")
+mkdir -p -- "$output_dir"
+output_dir=$(cd -- "$output_dir" && pwd -P)
+
+go_version=$(go env GOVERSION)
+
+verify_go_binary() {
+  local binary=$1
+  local arch=$2
+  local metadata
+  local expected_path=$'\n\tpath\tgithub.com/carter2099/herdr-web-client\n'
+  if ! metadata=$(go version -m "$binary"); then
+    printf 'release input is not a readable Go executable: %s\n' "$binary" >&2
+    exit 1
+  fi
+  for setting in "GOOS=linux" "GOARCH=$arch" "CGO_ENABLED=0"; do
+    if [[ $metadata != *$'\tbuild\t'"$setting"* ]]; then
+      printf 'release input %s lacks required build setting %s\n' "$binary" "$setting" >&2
+      exit 1
+    fi
+  done
+  if [[ $metadata != *"$expected_path"* ||
+        ${metadata%%$'\n'*} != *": $go_version" ]]; then
+    printf 'release input %s has the wrong module or Go toolchain metadata\n' "$binary" >&2
+    exit 1
+  fi
+}
+
+for binary in "$amd64_binary" "$arm64_binary"; do
+  if [[ ! -f $binary || ! -s $binary || ! -x $binary ]]; then
+    printf 'release binary must be a non-empty executable file: %s\n' "$binary" >&2
+    exit 1
+  fi
+done
+verify_go_binary "$amd64_binary" amd64
+verify_go_binary "$arm64_binary" arm64
+
+required_files=(
+  README.md
+  LICENSE
+  THIRD_PARTY_NOTICES.md
+  .env.example
+  deploy/herdr-web-client.service
+)
+for relative in "${required_files[@]}"; do
+  source_file="$ROOT_DIR/$relative"
+  if [[ ! -f $source_file ]]; then
+    printf 'required release file is missing: %s\n' "$relative" >&2
+    exit 1
+  fi
+done
+
+release_version=${version_tag#v}
+amd64_filename="herdr-web-client_${release_version}_linux_amd64.tar.gz"
+arm64_filename="herdr-web-client_${release_version}_linux_arm64.tar.gz"
+amd64_destination="$output_dir/$amd64_filename"
+arm64_destination="$output_dir/$arm64_filename"
+checksums="$output_dir/SHA256SUMS"
+for destination in "$amd64_destination" "$arm64_destination" "$checksums"; do
+  if [[ -e $destination || -L $destination ]]; then
+    printf 'refusing to overwrite existing release output: %s\n' "$destination" >&2
+    exit 1
+  fi
+done
+
+work_root=$(mktemp -d "$output_dir/.herdr-web-client-package.XXXXXX")
+published_outputs=()
+publish_complete=0
+cleanup() {
+  if (( !publish_complete && ${#published_outputs[@]} > 0 )); then
+    rm -f -- "${published_outputs[@]}"
+  fi
+  rm -rf -- "$work_root"
+}
+trap cleanup EXIT
+stage_root="$work_root/stage"
+extract_root="$work_root/extract"
+runtime_license_root="$work_root/runtime-licenses"
+module_list="$work_root/linked-modules"
+mkdir -p -- "$stage_root" "$extract_root" "$runtime_license_root"
+
+go_root=$(go env GOROOT)
+install -m 0644 -- "$go_root/LICENSE" "$runtime_license_root/Go-${go_version}-LICENSE"
+if [[ -f "$go_root/PATENTS" ]]; then
+  install -m 0644 -- "$go_root/PATENTS" "$runtime_license_root/Go-${go_version}-PATENTS"
+fi
+
+(
+  cd -- "$ROOT_DIR"
+  go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}{{end}}' ./... |
+    LC_ALL=C sort -u
+) > "$module_list"
+while IFS='|' read -r module_path module_version module_dir; do
+  [[ -n $module_path ]] || continue
+  safe_module=${module_path//\//__}
+  safe_version=${module_version//\//_}
+  license_found=0
+  for filename in LICENSE LICENSE.txt LICENSE.md COPYING COPYING.txt NOTICE NOTICE.txt NOTICE.md PATENTS PATENTS.txt; do
+    source_file="$module_dir/$filename"
+    [[ -f $source_file ]] || continue
+    install -m 0644 -- "$source_file" \
+      "$runtime_license_root/${safe_module}@${safe_version}-${filename}"
+    license_found=1
+  done
+  if ((license_found == 0)); then
+    printf 'linked Go module has no recognized license file: %s %s\n' "$module_path" "$module_version" >&2
+    exit 1
+  fi
+done < "$module_list"
+runtime_license_files=("$runtime_license_root"/*)
+
+
+
+copy_release_files() {
+  local stage=$1
+  install -m 0644 -- "$ROOT_DIR/README.md" "$stage/README.md"
+  install -m 0644 -- "$ROOT_DIR/LICENSE" "$stage/LICENSE"
+  install -m 0644 -- "$ROOT_DIR/THIRD_PARTY_NOTICES.md" "$stage/THIRD_PARTY_NOTICES.md"
+  install -m 0644 -- "$ROOT_DIR/.env.example" "$stage/.env.example"
+  install -m 0644 -- "$ROOT_DIR/deploy/herdr-web-client.service" "$stage/herdr-web-client.service"
+
+  mkdir -p -- "$stage/LICENSES"
+  local source_file
+  for source_file in "${runtime_license_files[@]}"; do
+    install -m 0644 -- "$source_file" "$stage/LICENSES/$(basename -- "$source_file")"
+  done
+}
+
+write_manifest() {
+  local stage=$1
+  (
+    cd -- "$stage"
+    while IFS= read -r -d '' relative; do
+      sha256sum -- "$relative"
+    done < <(find . -type f ! -name MANIFEST.txt -printf '%P\0' | LC_ALL=C sort -z)
+  ) > "$stage/MANIFEST.txt"
+  chmod 0644 -- "$stage/MANIFEST.txt"
+}
+
+make_archive() {
+  local stage_root_path=$1
+  local archive_root=$2
+  local archive_path=$3
+  (
+    cd -- "$stage_root_path"
+    tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+      --create --file=- "$archive_root"
+  ) | gzip -n -9 > "$archive_path"
+}
+
+verify_archive() {
+  local stage=$1
+  local archive_root=$2
+  local archive=$3
+  local extracted="$extract_root/$archive_root"
+  local expected_tar="$work_root/$archive_root.expected-tar"
+  local actual_tar="$work_root/$archive_root.actual-tar"
+  local repeat_archive="$work_root/$archive_root.repeat.tar.gz"
+
+  mkdir -p -- "$extracted"
+  tar -xzf "$archive" -C "$extracted"
+  [[ -d "$extracted/$archive_root" ]] || {
+    printf 'archive has no expected root directory: %s\n' "$archive" >&2
+    exit 1
+  }
+  local symlink
+  symlink=$(find "$extracted/$archive_root" -type l -print -quit)
+  if [[ -n $symlink ]]; then
+    printf 'archive contains an unexpected symbolic link: %s\n' "$archive" >&2
+    exit 1
+  fi
+
+  (
+    cd -- "$stage_root"
+    find "$archive_root" -mindepth 1 \( -type d -printf '%p/\n' -o -printf '%p\n' \)
+  ) | {
+    printf '%s/\n' "$archive_root"
+    cat
+  } | LC_ALL=C sort > "$expected_tar"
+  tar -tzf "$archive" | sed 's#^\./##' | LC_ALL=C sort > "$actual_tar"
+  if ! cmp -s "$expected_tar" "$actual_tar"; then
+    printf 'archive contents differ from the required manifest: %s\n' "$archive" >&2
+    diff -u "$expected_tar" "$actual_tar" >&2 || true
+    exit 1
+  fi
+
+  (
+    cd -- "$extracted/$archive_root"
+    sha256sum --check --strict MANIFEST.txt
+  ) >&2
+  while IFS= read -r -d '' relative; do
+    cmp -s "$stage/$relative" "$extracted/$archive_root/$relative" || {
+      printf 'archive file differs from staged file: %s\n' "$relative" >&2
+      exit 1
+    }
+  done < <(cd -- "$stage" && find . -type f -printf '%P\0' | LC_ALL=C sort -z)
+
+  make_archive "$stage_root" "$archive_root" "$repeat_archive"
+  if ! cmp -s "$archive" "$repeat_archive"; then
+    printf 'archive is not deterministic: %s\n' "$archive" >&2
+    exit 1
+  fi
+}
+
+package_arch() {
+  local arch=$1
+  local binary=$2
+  local archive_root="herdr-web-client_${release_version}_linux_${arch}"
+  local stage="$stage_root/$archive_root"
+  local archive="$work_root/$archive_root.tar.gz"
+
+  mkdir -m 0755 -- "$stage"
+  install -m 0755 -- "$binary" "$stage/herdr-web-client"
+  copy_release_files "$stage"
+  write_manifest "$stage"
+  make_archive "$stage_root" "$archive_root" "$archive"
+  verify_archive "$stage" "$archive_root" "$archive"
+}
+
+package_arch amd64 "$amd64_binary"
+amd64_archive="$work_root/$amd64_filename"
+package_arch arm64 "$arm64_binary"
+arm64_archive="$work_root/$arm64_filename"
+checksums_tmp="$work_root/SHA256SUMS"
+(
+  cd -- "$work_root"
+  sha256sum "$(basename -- "$amd64_archive")" "$(basename -- "$arm64_archive")"
+) > "$checksums_tmp"
+(
+  cd -- "$work_root"
+  sha256sum --check --strict SHA256SUMS
+)
+
+publish_output() {
+  local source=$1
+  local destination=$2
+  ln -- "$source" "$destination"
+  published_outputs+=("$destination")
+}
+publish_output "$amd64_archive" "$amd64_destination"
+publish_output "$arm64_archive" "$arm64_destination"
+publish_output "$checksums_tmp" "$checksums"
+(
+  cd -- "$output_dir"
+  sha256sum --check --strict SHA256SUMS
+)
+publish_complete=1
+printf 'release archives and SHA256SUMS verified in %s\n' "$output_dir"

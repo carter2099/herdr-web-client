@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="color-scheme" content="dark">
+    <meta name="referrer" content="no-referrer">
+    <title>Herdr</title>
+    <link rel="icon" type="image/png" sizes="512x512" href="/favicon.png">
+    <link rel="shortcut icon" href="/favicon.ico">
+    <link rel="stylesheet" href="/app.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div id="app" class="app-shell" data-connection="connecting">
+      <header class="status-header" aria-label="Herdr connection status">
+        <button id="switch-button" class="switch-button" type="button" data-action="toggle-switcher" aria-controls="terminal" aria-label="Toggle Herdr switcher">
+          <span class="switch-button__icon" aria-hidden="true"></span>
+        </button>
+        <div class="brand" aria-label="Herdr">herdr</div>
+        <div class="connection-summary">
+          <span id="status-indicator" class="status-indicator" aria-hidden="true"></span>
+          <span id="status-label" class="status-label">Connecting</span>
+        </div>
+        <span id="identity" class="identity" hidden></span>
+        <nav class="desktop-toolbar" aria-label="Terminal controls">
+          <button class="toolbar-button" type="button" data-action="open-keys" aria-controls="keys-sheet" aria-expanded="false">Keys</button>
+          <button class="toolbar-button" type="button" data-action="open-herdr" aria-controls="herdr-sheet" aria-expanded="false">Herdr</button>
+          <button class="toolbar-button" type="button" data-action="paste">Paste</button>
+        </nav>
+      </header>
+
+      <main id="terminal-stage" class="terminal-stage" aria-describedby="terminal-help">
+        <div id="terminal" class="terminal-host" aria-label="Herdr terminal"></div>
+        <div id="mobile-switch-mask" class="mobile-switch-mask" aria-hidden="true" hidden></div>
+        <section id="connection-panel" class="connection-panel" aria-labelledby="connection-title" aria-describedby="connection-detail">
+          <span id="connection-spinner" class="connection-spinner" aria-hidden="true"></span>
+          <h1 id="connection-title">Connecting to Herdr</h1>
+          <p id="connection-detail">Checking your sign-in session…</p>
+          <button id="connection-action" class="button button--primary" type="button" hidden>Try again</button>
+        </section>
+        <p id="terminal-help" class="sr-only">Use Type to open the mobile keyboard. Keys provides terminal control keys. Herdr provides semantic shortcuts.</p>
+      </main>
+
+      <nav class="mobile-dock" aria-label="Terminal controls">
+        <div class="mobile-dock__controls">
+          <button id="type-button" class="dock-button" type="button" data-action="toggle-keyboard" aria-controls="terminal" aria-pressed="false">Type</button>
+          <button class="dock-button" type="button" data-action="open-keys" aria-controls="keys-sheet" aria-expanded="false">Keys</button>
+          <button class="dock-button" type="button" data-action="open-herdr" aria-controls="herdr-sheet" aria-expanded="false">Herdr</button>
+          <button class="dock-button" type="button" data-action="paste">Paste</button>
+        </div>
+      </nav>
+    </div>
+
+    <dialog id="keys-sheet" class="sheet sheet--keys" aria-labelledby="keys-title">
+      <div class="sheet__header">
+        <div>
+          <p class="eyebrow">Mobile controls</p>
+          <h2 id="keys-title">Terminal keys</h2>
+        </div>
+        <button class="sheet__close" type="button" data-close-sheet aria-label="Close terminal keys">Close</button>
+      </div>
+      <div class="sheet__body">
+        <p class="sheet__intro">Send keys that are hard to reach on a phone keyboard.</p>
+
+        <section class="key-section" aria-labelledby="navigation-keys-title">
+          <h3 id="navigation-keys-title">Navigation</h3>
+          <div class="key-grid key-grid--navigation">
+            <button class="key-button" type="button" data-terminal-key="escape"><kbd>Esc</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="tab"><kbd>Tab</kbd></button>
+            <button class="key-button key-button--wide" type="button" data-terminal-key="shift-tab"><kbd>Shift</kbd><span>+</span><kbd>Tab</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="arrow-up" aria-label="Up arrow"><kbd>↑</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="arrow-left" aria-label="Left arrow"><kbd>←</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="arrow-down" aria-label="Down arrow"><kbd>↓</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="arrow-right" aria-label="Right arrow"><kbd>→</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="home"><kbd>Home</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="end"><kbd>End</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="page-up"><kbd>PgUp</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="page-down"><kbd>PgDn</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="backspace" aria-label="Backspace"><kbd>⌫</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="delete"><kbd>Del</kbd></button>
+            <button class="key-button key-button--wide" type="button" data-terminal-key="enter"><kbd>Enter</kbd></button>
+          </div>
+        </section>
+
+        <section class="key-section" aria-labelledby="control-keys-title">
+          <h3 id="control-keys-title">Control</h3>
+          <div class="key-grid key-grid--control">
+            <button class="key-button" type="button" data-terminal-key="ctrl-c"><kbd>Ctrl</kbd><span>+</span><kbd>C</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="ctrl-d"><kbd>Ctrl</kbd><span>+</span><kbd>D</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="ctrl-z"><kbd>Ctrl</kbd><span>+</span><kbd>Z</kbd></button>
+            <button class="key-button" type="button" data-terminal-key="ctrl-l"><kbd>Ctrl</kbd><span>+</span><kbd>L</kbd></button>
+            <button id="screen-reader-button" class="key-button key-button--wide" type="button" data-action="toggle-screen-reader" aria-pressed="false">Screen reader: off</button>
+          </div>
+        </section>
+      </div>
+    </dialog>
+
+    <dialog id="herdr-sheet" class="sheet sheet--shortcuts" aria-labelledby="herdr-title">
+      <div class="sheet__header">
+        <div>
+          <p class="eyebrow">Ctrl + Space</p>
+          <h2 id="herdr-title">Herdr shortcuts</h2>
+        </div>
+        <button class="sheet__close" type="button" data-close-sheet aria-label="Close Herdr shortcuts">Close</button>
+      </div>
+      <div class="sheet__body sheet__body--flush">
+        <p class="sheet__intro sheet__intro--inset">Each action sends Herdr’s NUL prefix and the exact key shown.</p>
+        <div class="shortcut-list" aria-label="Herdr semantic actions">
+          <button class="shortcut-row" type="button" data-herdr-key="w"><span>Workspace</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>W</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="h"><span>Pane left</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>H</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="j"><span>Pane down</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>J</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="k"><span>Pane up</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>K</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="l"><span>Pane right</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>L</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="p"><span>Previous tab</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>P</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="n"><span>Next tab</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>N</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="c"><span>New tab</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>C</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="b"><span>Toggle sidebar</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>B</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="z"><span>Zoom pane</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>Z</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="?"><span>Help</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>?</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="["><span>Copy mode</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>[</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="&quot;"><span>Split below</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>&quot;</kbd></span></button>
+          <button class="shortcut-row" type="button" data-herdr-key="%"><span>Split right</span><span class="shortcut-chord"><kbd>Ctrl+Space</kbd><kbd>%</kbd></span></button>
+        </div>
+      </div>
+    </dialog>
+
+
+    <div id="completion-toast" class="completion-toast" role="status" aria-live="polite" aria-atomic="true" hidden>
+      <span id="completion-toast-label" class="completion-toast__label">Agent completed</span>
+      <span id="completion-toast-detail" class="completion-toast__detail" hidden></span>
+    </div>
+
+    <div id="announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+    <noscript>
+      <section class="noscript-message">
+        <h1>JavaScript is required</h1>
+        <p>Herdr uses a same-origin WebSocket to carry terminal input and output.</p>
+      </section>
+    </noscript>
+  </body>
+</html>

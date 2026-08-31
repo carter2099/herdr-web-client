@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+
+if (( $# != 0 )); then
+  printf 'usage: %s\n' "${BASH_SOURCE[0]}" >&2
+  exit 2
+fi
+
+cd -- "$ROOT"
+
+printf '%s\n' '== whitespace =='
+git diff --check
+printf '%s\n' '== Bash syntax =='
+bash -n scripts/* deploy/release.sh
+
+
+printf '%s\n' '== frozen Bun dependencies =='
+bun install --frozen-lockfile --ignore-scripts
+
+printf '%s\n' '== JavaScript and CSS format/lint =='
+bunx --no-install biome check
+bunx --no-install knip --no-progress
+
+printf '%s\n' '== Go module consistency =='
+go mod verify
+if ! tidy_diff=$(go mod tidy -diff); then
+  printf '%s\n' 'go mod tidy could not complete' >&2
+  exit 1
+fi
+if [[ -n "$tidy_diff" ]]; then
+  printf '%s\n' 'go.mod or go.sum is not tidy:' >&2
+  printf '%s\n' "$tidy_diff" >&2
+  exit 1
+fi
+
+printf '%s\n' '== source hygiene =='
+scripts/check-source
+
+printf '%s\n' '== Bun unit tests =='
+bun test web/*.test.js
+
+printf '%s\n' '== Go vet and unit tests =='
+go vet ./...
+go test ./... -count=1
+
+printf '%s\n' '== generated-artifact drift =='
+scripts/check-generated
+
+printf '%s\n' '== embedded build =='
+scripts/build build/herdr-web-client

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPOSITORY='carter2099/herdr-web-client'
+WORKFLOW='release.yml'
+
+usage() {
+  printf 'usage: %s vMAJOR.MINOR.PATCH[-suffix]\n' "$(basename -- "$0")" >&2
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 2
+fi
+
+version_tag=$1
+semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'
+if [[ ! $version_tag =~ $semver_re ]]; then
+  printf 'invalid release tag: %s\n' "$version_tag" >&2
+  usage
+  exit 2
+fi
+if ! git check-ref-format "refs/tags/$version_tag" >/dev/null; then
+  printf 'release tag is not a valid Git ref: %s\n' "$version_tag" >&2
+  exit 2
+fi
+
+if [[ $(git symbolic-ref --quiet --short HEAD 2>/dev/null || true) != main ]]; then
+  printf 'release must be dispatched from the main branch\n' >&2
+  exit 1
+fi
+if [[ -n $(git status --porcelain=v1 --untracked-files=all) ]]; then
+  printf 'release requires a clean working tree\n' >&2
+  exit 1
+fi
+source_sha=$(git rev-parse --verify 'HEAD^{commit}')
+if [[ ! $source_sha =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'could not resolve a full commit SHA for HEAD\n' >&2
+  exit 1
+fi
+
+# Check the exact commit that the workflow will validate before dispatching. The
+# workflow repeats this check immediately before creating the draft release.
+main_sha=$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+if [[ $main_sha != "$source_sha" ]]; then
+  printf 'local main (%s) is not the current remote main (%s)\n' "$source_sha" "$main_sha" >&2
+  exit 1
+fi
+ci_conclusion=$(gh api \
+  "repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$source_sha&event=push&status=completed&per_page=20" \
+  --jq '[.workflow_runs[] | select(.head_branch == "main")] | sort_by(.run_number) | last | .conclusion // ""')
+if [[ "$ci_conclusion" != success ]]; then
+  printf 'latest completed main CI run for %s is not successful\n' "$source_sha" >&2
+  exit 1
+fi
+
+if [[ $version_tag == *-* ]]; then
+  prerelease=true
+else
+  prerelease=false
+fi
+request_id=${HERDR_RELEASE_REQUEST_ID:-}
+if [[ -z $request_id ]]; then
+  version_part=${version_tag#v}
+  request_id="release-${version_part:0:16}-${source_sha:0:12}-$(date -u +%Y%m%d%H%M%S)-$$"
+fi
+request_id_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+if [[ ! $request_id =~ $request_id_re ]]; then
+  printf 'invalid release request ID: %s\n' "$request_id" >&2
+  exit 2
+fi
+
+# GitHub currently answers workflow_dispatch with HTTP 204. Keep the response
+# because installations that return run details can provide the run ID here;
+# otherwise resolve that ID through the workflow-runs API using our unique input.
+dispatch_response=$(gh api --method POST \
+  "repos/$REPOSITORY/actions/workflows/$WORKFLOW/dispatches" \
+  -f ref=main \
+  -f "inputs[tag]=$version_tag" \
+  -f "inputs[source_sha]=$source_sha" \
+  -f "inputs[prerelease]=$prerelease" \
+  -f "inputs[request_id]=$request_id")
+
+run_id=$(printf '%s' "$dispatch_response" | jq -r '.run_id // .workflow_run.id // .id // empty' 2>/dev/null || true)
+if [[ -n $run_id && ! $run_id =~ ^[0-9]+$ ]]; then
+  run_id=''
+fi
+
+if [[ -z $run_id ]]; then
+  # A dispatch is queued asynchronously. Do not watch an unrelated release run:
+  # release.yml includes request_id in its run name, making this lookup exact.
+  for _ in {1..180}; do
+    runs=$(gh api \
+      "repos/$REPOSITORY/actions/workflows/$WORKFLOW/runs?event=workflow_dispatch&branch=main&per_page=100")
+    run_id=$(printf '%s' "$runs" | jq -r --arg request_id "$request_id" '
+      [.workflow_runs[]
+       | select((.display_title // "") | contains($request_id))
+       | select((.head_branch // "") == "main")]
+      | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true)
+    if [[ -n $run_id && $run_id =~ ^[0-9]+$ ]]; then
+      break
+    fi
+    sleep 5
+  done
+fi
+
+if [[ -z $run_id || ! $run_id =~ ^[0-9]+$ ]]; then
+  printf 'workflow dispatch succeeded but its run ID was not found\n' >&2
+  exit 1
+fi
+
+printf 'watching release workflow run %s in %s\n' "$run_id" "$REPOSITORY"
+gh run watch "$run_id" --repo "$REPOSITORY" --exit-status
+printf 'release workflow run %s completed successfully\n' "$run_id"
