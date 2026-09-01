@@ -96,9 +96,20 @@ jobs:
           }
 
           resolve_tag_commit() {
-            local object_type object_sha tag_object depth=0
-            object_type="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')"
-            object_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+            local attempt object_type object_sha ref_object tag_object depth=0
+            for attempt in {1..10}; do
+              if ref_object="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" 2>/dev/null)"; then
+                break
+              fi
+              ref_object=''
+              ((attempt < 10)) && sleep 1
+            done
+            [[ -n "$ref_object" ]] || {
+              echo "tag $TAG is not readable through the GitHub API" >&2
+              return 1
+            }
+            object_type="$(jq -er '.object.type' <<<"$ref_object")"
+            object_sha="$(jq -er '.object.sha' <<<"$ref_object")"
             while [[ "$object_type" == tag ]]; do
               ((depth += 1))
               ((depth <= 8)) || {
@@ -307,9 +318,20 @@ jobs:
           fi
 
           resolve_tag_commit() {
-            local object_type object_sha tag_object depth=0
-            object_type="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.type')"
-            object_sha="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')"
+            local attempt object_type object_sha ref_object tag_object depth=0
+            for attempt in {1..10}; do
+              if ref_object="$(gh api "repos/$REPOSITORY/git/ref/tags/$TAG" 2>/dev/null)"; then
+                break
+              fi
+              ref_object=''
+              ((attempt < 10)) && sleep 1
+            done
+            [[ -n "$ref_object" ]] || {
+              echo "tag $TAG is not readable through the GitHub API" >&2
+              return 1
+            }
+            object_type="$(jq -er '.object.type' <<<"$ref_object")"
+            object_sha="$(jq -er '.object.sha' <<<"$ref_object")"
             while [[ "$object_type" == tag ]]; do
               ((depth += 1))
               ((depth <= 8)) || {
