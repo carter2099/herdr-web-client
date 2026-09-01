@@ -16,29 +16,21 @@ import (
 const (
 	defaultListenAddr = "127.0.0.1:8080"
 
-	listenAddrEnv      = "HERDR_WEB_CLIENT_LISTEN_ADDR"
-	publicOriginEnv    = "HERDR_WEB_CLIENT_PUBLIC_ORIGIN"
-	issuerEnv          = "HERDR_WEB_CLIENT_OIDC_ISSUER"
-	audienceEnv        = "HERDR_WEB_CLIENT_OIDC_AUDIENCE"
-	assertionHeaderEnv = "HERDR_WEB_CLIENT_OIDC_ASSERTION_HEADER"
-	jwksURLEnv         = "HERDR_WEB_CLIENT_OIDC_JWKS_URL"
-	herdrPathEnv       = "HERDR_WEB_CLIENT_HERDR_PATH"
-	herdrWorkdirEnv    = "HERDR_WEB_CLIENT_HERDR_WORKDIR"
-	herdrSocketEnv     = "HERDR_WEB_CLIENT_HERDR_SOCKET"
+	listenAddrEnv   = "HERDR_WEB_CLIENT_LISTEN_ADDR"
+	publicOriginEnv = "HERDR_WEB_CLIENT_PUBLIC_ORIGIN"
+	herdrPathEnv    = "HERDR_WEB_CLIENT_HERDR_PATH"
+	herdrWorkdirEnv = "HERDR_WEB_CLIENT_HERDR_WORKDIR"
+	herdrSocketEnv  = "HERDR_WEB_CLIENT_HERDR_SOCKET"
 )
 
 // Config contains the security and runtime policy for the web attachment
 // server and the Herdr process it launches.
 type Config struct {
-	ListenAddr      string
-	PublicOrigin    string
-	Issuer          string
-	Audience        string
-	AssertionHeader string
-	JWKSURL         string
-	HerdrPath       string
-	HerdrWorkdir    string
-	HerdrSocket     string
+	ListenAddr   string
+	PublicOrigin string
+	HerdrPath    string
+	HerdrWorkdir string
+	HerdrSocket  string
 
 	NonceTTL         time.Duration
 	MaxInboundBytes  int64
@@ -50,8 +42,7 @@ type Config struct {
 }
 
 // DefaultConfig returns safe defaults for optional runtime settings. The
-// public origin, OIDC issuer, audience, and assertion header are deployment
-// requirements and intentionally have no defaults.
+// public origin is a deployment requirement and intentionally has no default.
 func DefaultConfig() Config {
 	cfg := Config{
 		ListenAddr:       defaultListenAddr,
@@ -80,7 +71,7 @@ func runtimeHomeDir() string {
 }
 
 // LoadConfig reads deployment settings and validates the complete runtime
-// configuration. Required identity settings have no unauthenticated fallback.
+// configuration.
 func LoadConfig() (Config, error) {
 	cfg := DefaultConfig()
 	for _, setting := range []struct {
@@ -89,10 +80,6 @@ func LoadConfig() (Config, error) {
 	}{
 		{listenAddrEnv, &cfg.ListenAddr},
 		{publicOriginEnv, &cfg.PublicOrigin},
-		{issuerEnv, &cfg.Issuer},
-		{audienceEnv, &cfg.Audience},
-		{assertionHeaderEnv, &cfg.AssertionHeader},
-		{jwksURLEnv, &cfg.JWKSURL},
 		{herdrPathEnv, &cfg.HerdrPath},
 		{herdrWorkdirEnv, &cfg.HerdrWorkdir},
 		{herdrSocketEnv, &cfg.HerdrSocket},
@@ -116,29 +103,10 @@ func LoadConfig() (Config, error) {
 // loopback-only bind policy and exact request-check origins.
 func (c Config) Validate() error {
 	c = c.withDefaults()
-	if err := c.validateServer(); err != nil {
-		return err
-	}
-	if err := validateOIDCIssuer(c.Issuer); err != nil {
-		return err
-	}
-	if strings.TrimSpace(c.Audience) == "" {
-		return errors.New("OIDC audience is required")
-	}
-	if strings.TrimSpace(c.Audience) != c.Audience {
-		return errors.New("OIDC audience must not have surrounding whitespace")
-	}
-	if c.JWKSURL != "" {
-		if err := validateJWKSURL(c.JWKSURL); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.validateServer()
 }
 
-// validateServer is used by tests and by NewServer when an authenticator has
-// already been constructed. It intentionally does not require OIDC issuer or
-// audience because those are consumed while constructing the authenticator.
+// validateServer is used by tests and by NewServer.
 func (c Config) validateServer() error {
 	c = c.withDefaults()
 	if strings.TrimSpace(c.ListenAddr) == "" {
@@ -169,9 +137,6 @@ func (c Config) validateServer() error {
 	}
 
 	if err := validatePublicOrigin(c.PublicOrigin); err != nil {
-		return err
-	}
-	if err := validateAssertionHeader(c.AssertionHeader); err != nil {
 		return err
 	}
 	for _, setting := range []struct {
@@ -283,35 +248,6 @@ func validASCIIDNSName(hostname string) bool {
 	return !numeric
 }
 
-func validateOIDCIssuer(issuer string) error {
-	if strings.TrimSpace(issuer) == "" {
-		return errors.New("OIDC issuer is required")
-	}
-	parsed, err := url.Parse(issuer)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
-		parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery ||
-		parsed.Fragment != "" || strings.Contains(issuer, "#") || !validURLPort(parsed) {
-		return fmt.Errorf("OIDC issuer must be an absolute https URL without userinfo, query, or fragment: %q", issuer)
-	}
-	if strings.TrimSpace(issuer) != issuer {
-		return errors.New("OIDC issuer must not have surrounding whitespace")
-	}
-	return nil
-}
-
-func validateJWKSURL(jwksURL string) error {
-	parsed, err := url.Parse(jwksURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
-		parsed.User != nil || parsed.Opaque != "" || parsed.Fragment != "" || strings.Contains(jwksURL, "#") ||
-		!validURLPort(parsed) {
-		return fmt.Errorf("OIDC JWKS URL must be an absolute https URL: %q", jwksURL)
-	}
-	if strings.TrimSpace(jwksURL) != jwksURL {
-		return errors.New("OIDC JWKS URL must not have surrounding whitespace")
-	}
-	return nil
-}
-
 func validURLPort(parsed *url.URL) bool {
 	if parsed == nil {
 		return false
@@ -327,55 +263,6 @@ func validURLPort(parsed *url.URL) bool {
 	}
 	value, err := strconv.Atoi(port)
 	return err == nil && value >= 1 && value <= 65535
-}
-
-func validateAssertionHeader(header string) error {
-	if !isHTTPToken(header) {
-		return fmt.Errorf("OIDC assertion header must be a legal HTTP token: %q", header)
-	}
-	for _, reserved := range [...]string{
-		"Host",
-		"Origin",
-		"Cookie",
-		"Connection",
-		"Upgrade",
-		"Content-Length",
-		"Transfer-Encoding",
-		"Trailer",
-		"TE",
-		"Keep-Alive",
-		"Proxy-Connection",
-		"Sec-WebSocket-Key",
-		"Sec-WebSocket-Version",
-		"Sec-WebSocket-Protocol",
-		"Sec-WebSocket-Extensions",
-		sessionRequestHeader,
-	} {
-		if strings.EqualFold(header, reserved) {
-			return fmt.Errorf("OIDC assertion header %q is reserved", header)
-		}
-	}
-	return nil
-}
-
-func isHTTPToken(value string) bool {
-	if value == "" || strings.TrimSpace(value) != value {
-		return false
-	}
-	for index := range value {
-		char := value[index]
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') {
-			continue
-		}
-		switch char {
-		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 func validateAbsolutePath(name, value string) error {

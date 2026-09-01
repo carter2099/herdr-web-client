@@ -15,20 +15,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type coreTestAuthenticator struct {
-	identity Identity
-	err      error
-	calls    atomic.Int32
-}
-
-func (a *coreTestAuthenticator) Authenticate(_ context.Context, assertion string) (Identity, error) {
-	a.calls.Add(1)
-	if assertion == "" {
-		return Identity{}, errors.New("empty assertion")
-	}
-	return a.identity, a.err
-}
-
 type coreTestLauncher struct {
 	starts atomic.Int32
 }
@@ -38,11 +24,9 @@ func (l *coreTestLauncher) Start(context.Context, int, int) (PTYSession, error) 
 	return nil, errors.New("unexpected PTY start")
 }
 
-func TestSessionRequiresExactHostAndAssertion(t *testing.T) {
+func TestSessionRequiresExactHostAndRequestMarker(t *testing.T) {
 	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{Subject: "subject", Email: "user@example.com", ExpiresAt: time.Now().Add(time.Minute)}}
-	launcher := &coreTestLauncher{}
-	server, err := NewServer(cfg, auth, launcher, nil)
+	server, err := NewServer(cfg, &coreTestLauncher{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -54,72 +38,25 @@ func TestSessionRequiresExactHostAndAssertion(t *testing.T) {
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("wrong Host status = %d, want 404", response.Code)
 	}
-	if auth.calls.Load() != 0 {
-		t.Fatal("wrong Host reached authenticator")
-	}
 
 	missingRequestMarker := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/api/session", nil)
 	missingRequestMarker.Host = cfg.publicHost()
-	missingRequestMarker.Header.Set(cfg.AssertionHeader, "assertion")
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, missingRequestMarker)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("missing request marker status = %d, want 403", response.Code)
 	}
-	if auth.calls.Load() != 0 {
-		t.Fatal("missing request marker reached authenticator")
-	}
-
-	missingAssertion := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/api/session", nil)
-	missingAssertion.Host = cfg.publicHost()
-	missingAssertion.Header.Set(sessionRequestHeader, sessionRequestValue)
-	response = httptest.NewRecorder()
-	server.ServeHTTP(response, missingAssertion)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("missing assertion status = %d, want 401", response.Code)
-	}
 }
 
-func TestSessionRequiresExactlyOneConfiguredAssertionHeader(t *testing.T) {
+func TestResponsesSetBrowserSecurityHeaders(t *testing.T) {
 	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
-	server, err := NewServer(cfg, auth, &coreTestLauncher{}, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/api/session", nil)
-	request.Host = cfg.publicHost()
-	request.Header.Set(sessionRequestHeader, sessionRequestValue)
-	request.Header.Add(cfg.AssertionHeader, "first")
-	request.Header.Add(cfg.AssertionHeader, "second")
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("duplicate assertion status = %d, want 401", response.Code)
-	}
-	if auth.calls.Load() != 0 {
-		t.Fatal("duplicate assertion reached authenticator")
-	}
-}
-
-func TestProtectedResponsesSetBrowserSecurityHeaders(t *testing.T) {
-	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
-	server, err := NewServer(cfg, auth, &coreTestLauncher{}, nil)
+	server, err := NewServer(cfg, &coreTestLauncher{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/", nil)
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "assertion")
+
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 
@@ -155,18 +92,13 @@ func TestProtectedResponsesSetBrowserSecurityHeaders(t *testing.T) {
 
 func TestCircularFaviconIsServed(t *testing.T) {
 	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
-	server, err := NewServer(cfg, auth, &coreTestLauncher{}, nil)
+	server, err := NewServer(cfg, &coreTestLauncher{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/favicon.png", nil)
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "assertion")
+
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 
@@ -191,17 +123,14 @@ func TestCircularFaviconIsServed(t *testing.T) {
 	}
 }
 
-
-func TestSessionNonceIsBoundAndSingleUse(t *testing.T) {
+func TestSessionNonceIsSingleUse(t *testing.T) {
 	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{Subject: "subject-a", Email: "user@example.com", ExpiresAt: time.Now().Add(time.Minute)}}
-	server, err := NewServer(cfg, auth, &coreTestLauncher{}, nil)
+	server, err := NewServer(cfg, &coreTestLauncher{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/api/session", nil)
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "assertion")
 	request.Header.Set(sessionRequestHeader, sessionRequestValue)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -209,32 +138,26 @@ func TestSessionNonceIsBoundAndSingleUse(t *testing.T) {
 		t.Fatalf("session status = %d", response.Code)
 	}
 	var payload struct {
-		Email  string    `json:"email"`
 		Nonce  string    `json:"nonce"`
 		Expiry time.Time `json:"expires_at"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode session: %v", err)
 	}
-	if payload.Email != auth.identity.Email || payload.Nonce == "" || !payload.Expiry.After(time.Now()) {
+	if payload.Nonce == "" || !payload.Expiry.After(time.Now()) {
 		t.Fatalf("unexpected session payload: %+v", payload)
 	}
-	if !server.nonces.consume(payload.Nonce, "subject-a", time.Now()) {
-		t.Fatal("nonce did not bind to its subject")
+	if !server.nonces.consume(payload.Nonce, time.Now()) {
+		t.Fatal("nonce was not accepted")
 	}
-	if server.nonces.consume(payload.Nonce, "subject-a", time.Now()) {
+	if server.nonces.consume(payload.Nonce, time.Now()) {
 		t.Fatal("nonce was accepted more than once")
 	}
 }
 
 func TestSessionNonceCapacityIsBounded(t *testing.T) {
 	cfg := validTestConfig()
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
-	server, err := NewServer(cfg, auth, &coreTestLauncher{}, nil)
+	server, err := NewServer(cfg, &coreTestLauncher{}, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -243,7 +166,7 @@ func TestSessionNonceCapacityIsBounded(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, cfg.PublicOrigin+"/api/session", nil)
 		request.Host = cfg.publicHost()
 		request.Header.Set(sessionRequestHeader, sessionRequestValue)
-		request.Header.Set(cfg.AssertionHeader, "assertion")
+
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
 
@@ -264,9 +187,8 @@ func TestAttachRejectsBinaryBeforeHelloWithoutSpawning(t *testing.T) {
 	testServer := httptest.NewUnstartedServer(nil)
 	cfg := validTestConfig()
 	cfg.PublicOrigin = "https://" + testServer.Listener.Addr().String()
-	auth := &coreTestAuthenticator{identity: Identity{Subject: "subject", Email: "user@example.com", ExpiresAt: time.Now().Add(time.Minute)}}
 	launcher := &coreTestLauncher{}
-	server, err := NewServer(cfg, auth, launcher, nil)
+	server, err := NewServer(cfg, launcher, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -279,7 +201,7 @@ func TestAttachRejectsBinaryBeforeHelloWithoutSpawning(t *testing.T) {
 		t.Fatalf("session request: %v", err)
 	}
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "assertion")
+
 	request.Header.Set(sessionRequestHeader, sessionRequestValue)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -296,7 +218,7 @@ func TestAttachRejectsBinaryBeforeHelloWithoutSpawning(t *testing.T) {
 	dialer := websocket.Dialer{Subprotocols: []string{webSocketSubprotocol}}
 	header := http.Header{}
 	header.Set("Origin", cfg.PublicOrigin)
-	header.Set(cfg.AssertionHeader, "assertion")
+
 	wsURL := strings.Replace(testServer.URL, "http://", "ws://", 1) + "/api/attach"
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {
@@ -323,13 +245,8 @@ func TestAttachTimesOutBeforeHelloWithoutSpawning(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.PublicOrigin = "https://" + testServer.Listener.Addr().String()
 	cfg.HelloTimeout = 25 * time.Millisecond
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
 	launcher := &coreTestLauncher{}
-	server, err := NewServer(cfg, auth, launcher, nil)
+	server, err := NewServer(cfg, launcher, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -340,7 +257,7 @@ func TestAttachTimesOutBeforeHelloWithoutSpawning(t *testing.T) {
 	dialer := websocket.Dialer{Subprotocols: []string{webSocketSubprotocol}}
 	header := http.Header{}
 	header.Set("Origin", cfg.PublicOrigin)
-	header.Set(cfg.AssertionHeader, "assertion")
+
 	wsURL := strings.Replace(testServer.URL, "http://", "ws://", 1) + "/api/attach"
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {
@@ -366,13 +283,8 @@ func TestPendingAttachBoundsConcurrentSockets(t *testing.T) {
 	testServer := httptest.NewUnstartedServer(nil)
 	cfg := validTestConfig()
 	cfg.PublicOrigin = "https://" + testServer.Listener.Addr().String()
-	auth := &coreTestAuthenticator{identity: Identity{
-		Subject:   "subject",
-		Email:     "user@example.com",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
 	launcher := &coreTestLauncher{}
-	server, err := NewServer(cfg, auth, launcher, nil)
+	server, err := NewServer(cfg, launcher, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -383,7 +295,7 @@ func TestPendingAttachBoundsConcurrentSockets(t *testing.T) {
 	dialer := websocket.Dialer{Subprotocols: []string{webSocketSubprotocol}}
 	header := http.Header{}
 	header.Set("Origin", cfg.PublicOrigin)
-	header.Set(cfg.AssertionHeader, "assertion")
+
 	wsURL := strings.Replace(testServer.URL, "http://", "ws://", 1) + "/api/attach"
 	conn, _, err := dialer.Dial(wsURL, header)
 	if err != nil {
@@ -396,7 +308,7 @@ func TestPendingAttachBoundsConcurrentSockets(t *testing.T) {
 		t.Fatalf("second session request: %v", err)
 	}
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "assertion")
+
 	request.Header.Set(sessionRequestHeader, sessionRequestValue)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {

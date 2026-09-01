@@ -240,20 +240,8 @@ button:disabled {
 }
 
 .app-shell[data-connection="offline"] .status-indicator,
-.app-shell[data-connection="error"] .status-indicator,
-.app-shell[data-connection="auth"] .status-indicator {
+.app-shell[data-connection="error"] .status-indicator {
   background: var(--color-danger);
-}
-
-.identity {
-  display: none;
-  min-width: 0;
-  overflow: hidden;
-  margin-left: auto;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .desktop-toolbar {
@@ -796,11 +784,6 @@ kbd {
   .switch-button,
   .mobile-switch-mask {
     display: none;
-  }
-
-  .identity {
-    display: block;
-    max-width: 14rem;
   }
 
   .completion-toast {

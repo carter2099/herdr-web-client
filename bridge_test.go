@@ -35,7 +35,7 @@ func TestBuildClientEnvExcludesHerdrEnvAndUnknownValues(t *testing.T) {
 
 func TestSystemdControlEnvironmentExcludesApplicationValues(t *testing.T) {
 	env := buildSystemdControlEnv([]string{
-		"HERDR_WEB_CLIENT_OIDC_AUDIENCE=secret",
+		"HERDR_WEB_CLIENT_PUBLIC_ORIGIN=https://private.example",
 		"HOME=/home/test",
 		"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
 		"XDG_RUNTIME_DIR=/run/user/1000",

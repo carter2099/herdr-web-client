@@ -188,7 +188,7 @@ for _ in {1..40}; do
     curl --silent --show-error --noproxy '*' --max-time 1 --output /dev/null --write-out '%{http_code}' \
       --header "Host: $public_host" "http://$listen_addr/" 2>/dev/null || true
   )"
-  if [[ "$status_code" == '401' ]] && systemctl --user is-active --quiet "$service_name"; then
+  if [[ "$status_code" == '200' ]] && systemctl --user is-active --quiet "$service_name"; then
     ready=1
     break
   fi

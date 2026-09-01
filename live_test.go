@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,14 +14,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type liveAuthenticator struct {
-	identity Identity
-}
-
-func (a liveAuthenticator) Authenticate(context.Context, string) (Identity, error) {
-	return a.identity, nil
-}
-
 func TestLiveHerdrWebSocketAttach(t *testing.T) {
 	if os.Getenv("HERDR_WEB_CLIENT_LIVE") != "1" {
 		t.Skip("set HERDR_WEB_CLIENT_LIVE=1 to attach to the live local Herdr server")
@@ -31,12 +22,7 @@ func TestLiveHerdrWebSocketAttach(t *testing.T) {
 	testServer := httptest.NewUnstartedServer(nil)
 	cfg := validTestConfig()
 	cfg.PublicOrigin = "https://" + testServer.Listener.Addr().String()
-	auth := liveAuthenticator{identity: Identity{
-		Subject:   "integration-test",
-		Email:     "integration@example.invalid",
-		ExpiresAt: time.Now().Add(time.Minute),
-	}}
-	application, err := NewServer(cfg, auth, NewPTYLauncher(cfg.HerdrPath, cfg.HerdrWorkdir), nil)
+	application, err := NewServer(cfg, NewPTYLauncher(cfg.HerdrPath, cfg.HerdrWorkdir), nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -50,7 +36,7 @@ func TestLiveHerdrWebSocketAttach(t *testing.T) {
 		t.Fatalf("create session request: %v", err)
 	}
 	request.Host = cfg.publicHost()
-	request.Header.Set(cfg.AssertionHeader, "live-test-assertion")
+
 	request.Header.Set(sessionRequestHeader, sessionRequestValue)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -70,7 +56,7 @@ func TestLiveHerdrWebSocketAttach(t *testing.T) {
 	dialer := websocket.Dialer{Subprotocols: []string{webSocketSubprotocol}}
 	header := http.Header{}
 	header.Set("Origin", cfg.PublicOrigin)
-	header.Set(cfg.AssertionHeader, "live-test-assertion")
+
 	wsURL := strings.Replace(testServer.URL, "http://", "ws://", 1) + "/api/attach"
 	connection, _, err := dialer.Dial(wsURL, header)
 	if err != nil {

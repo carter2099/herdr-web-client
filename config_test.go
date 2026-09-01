@@ -2,16 +2,12 @@ package main
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func validTestConfig() Config {
 	cfg := DefaultConfig()
 	cfg.PublicOrigin = "https://web.example.test"
-	cfg.Issuer = "https://issuer.example.test"
-	cfg.Audience = "audience"
-	cfg.AssertionHeader = "X-Test-Assertion"
 	return cfg
 }
 
@@ -53,53 +49,21 @@ func TestConfigAcceptsNumericLoopbackListeners(t *testing.T) {
 	}
 }
 
-func TestConfigRequiresOIDCIdentitySettings(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{name: "public origin", mutate: func(cfg *Config) { cfg.PublicOrigin = "" }},
-		{name: "issuer", mutate: func(cfg *Config) { cfg.Issuer = "" }},
-		{name: "audience", mutate: func(cfg *Config) { cfg.Audience = "" }},
-		{name: "assertion header", mutate: func(cfg *Config) { cfg.AssertionHeader = "" }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := validTestConfig()
-			test.mutate(&cfg)
-			if err := cfg.Validate(); err == nil {
-				t.Fatalf("Validate accepted missing %s", test.name)
-			}
-		})
-	}
-}
-
-func TestConfigAcceptsIssuerTenantPathAndJWKSURL(t *testing.T) {
+func TestConfigRequiresPublicOrigin(t *testing.T) {
 	cfg := validTestConfig()
-	cfg.Issuer = "https://issuer.example.test/tenant/one"
-	cfg.JWKSURL = "https://keys.example.test/tenant/jwks"
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
+	cfg.PublicOrigin = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a missing public origin")
 	}
 }
 
-func TestConfigRejectsMalformedURLs(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{name: "origin path", mutate: func(cfg *Config) { cfg.PublicOrigin += "/path" }},
-		{name: "origin query", mutate: func(cfg *Config) { cfg.PublicOrigin += "?" }},
-		{name: "origin fragment", mutate: func(cfg *Config) { cfg.PublicOrigin += "#" }},
-		{name: "issuer query", mutate: func(cfg *Config) { cfg.Issuer += "?" }},
-		{name: "issuer fragment", mutate: func(cfg *Config) { cfg.Issuer += "#" }},
-		{name: "issuer insecure", mutate: func(cfg *Config) { cfg.Issuer = "http://issuer.example.test" }},
-		{name: "JWKS insecure", mutate: func(cfg *Config) { cfg.JWKSURL = "http://keys.example.test/jwks" }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+func TestConfigRejectsMalformedPublicOrigin(t *testing.T) {
+	for _, suffix := range []string{"/path", "?", "#"} {
+		t.Run(suffix, func(t *testing.T) {
 			cfg := validTestConfig()
-			test.mutate(&cfg)
+			cfg.PublicOrigin += suffix
 			if err := cfg.Validate(); err == nil {
-				t.Fatal("Validate accepted malformed URL")
+				t.Fatal("Validate accepted malformed public origin")
 			}
 		})
 	}
@@ -141,37 +105,6 @@ func TestConfigAcceptsCanonicalPublicOrigins(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsInvalidAssertionHeaders(t *testing.T) {
-	for _, header := range []string{
-		"",
-		"X Bad",
-		"Host",
-		"origin",
-		"Cookie",
-		"Connection",
-		"upgrade",
-		"Content-Length",
-		"Transfer-Encoding",
-		"Trailer",
-		"TE",
-		"Keep-Alive",
-		"Proxy-Connection",
-		"Sec-WebSocket-Key",
-		"sec-websocket-version",
-		"Sec-WebSocket-Protocol",
-		"Sec-WebSocket-Extensions",
-		sessionRequestHeader,
-	} {
-		t.Run(strings.ReplaceAll(header, " ", "_"), func(t *testing.T) {
-			cfg := validTestConfig()
-			cfg.AssertionHeader = header
-			if err := cfg.Validate(); err == nil {
-				t.Fatalf("Validate accepted assertion header %q", header)
-			}
-		})
-	}
-}
-
 func TestConfigRejectsRelativeHerdrPaths(t *testing.T) {
 	for _, field := range []string{"path", "workdir", "socket"} {
 		t.Run(field, func(t *testing.T) {
@@ -196,10 +129,6 @@ func TestLoadConfigUsesOnlyCanonicalEnvironment(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv(listenAddrEnv, "127.0.0.1:19090")
 	t.Setenv(publicOriginEnv, "https://web.custom.test")
-	t.Setenv(issuerEnv, "https://issuer.custom.test/tenant")
-	t.Setenv(audienceEnv, "custom-audience")
-	t.Setenv(assertionHeaderEnv, "X-Custom-Assertion")
-	t.Setenv(jwksURLEnv, "https://keys.custom.test/jwks")
 	t.Setenv(herdrPathEnv, filepath.Join(home, "bin", "herdr"))
 	t.Setenv(herdrWorkdirEnv, filepath.Join(home, "workspace"))
 	t.Setenv(herdrSocketEnv, filepath.Join(home, "run", "herdr.sock"))
@@ -209,23 +138,16 @@ func TestLoadConfigUsesOnlyCanonicalEnvironment(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	if cfg.ListenAddr != "127.0.0.1:19090" || cfg.PublicOrigin != "https://web.custom.test" ||
-		cfg.Issuer != "https://issuer.custom.test/tenant" || cfg.Audience != "custom-audience" ||
-		cfg.AssertionHeader != "X-Custom-Assertion" || cfg.JWKSURL != "https://keys.custom.test/jwks" {
-		t.Fatalf("unexpected loaded identity config: %+v", cfg)
+		cfg.HerdrPath != filepath.Join(home, "bin", "herdr") ||
+		cfg.HerdrWorkdir != filepath.Join(home, "workspace") ||
+		cfg.HerdrSocket != filepath.Join(home, "run", "herdr.sock") {
+		t.Fatalf("unexpected loaded config: %+v", cfg)
 	}
 }
 
 func TestLoadConfigRejectsExplicitEmptyValues(t *testing.T) {
-	required := map[string]string{
-		publicOriginEnv:    "https://web.example.test",
-		issuerEnv:          "https://issuer.example.test",
-		audienceEnv:        "audience",
-		assertionHeaderEnv: "X-Test-Assertion",
-	}
-	for name, value := range required {
-		t.Setenv(name, value)
-	}
-	for _, name := range []string{listenAddrEnv, publicOriginEnv, issuerEnv, audienceEnv, assertionHeaderEnv, jwksURLEnv, herdrPathEnv, herdrWorkdirEnv, herdrSocketEnv} {
+	t.Setenv(publicOriginEnv, "https://web.example.test")
+	for _, name := range []string{listenAddrEnv, publicOriginEnv, herdrPathEnv, herdrWorkdirEnv, herdrSocketEnv} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "")
 			if _, err := LoadConfig(); err == nil {

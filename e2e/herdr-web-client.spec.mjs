@@ -83,7 +83,7 @@ async function openReady(page, fixture) {
       state.websocket_connections === 1 &&
       state.hello_messages === 1 &&
       state.ready_messages === 1,
-    'the authenticated session must establish one WebSocket hello/ready attachment',
+    'the session must establish one WebSocket hello/ready attachment',
   );
   await waitForState(
     fixture,
@@ -254,23 +254,11 @@ async function securityHeaders(page, origin) {
 async function assertTransportBoundary(fixture) {
   const state = await fixture.state();
   expect(state.origin).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
-  expect(state.issuer).toMatch(/^https:\/\/127\.0\.0\.1:\d+\/tenant-fixture$/);
-  expect(state.jwks_url).toMatch(
-    /^https:\/\/127\.0\.0\.1:\d+\/tenant-fixture\/jwks$/,
-  );
   expect(state.target_path).toBe(fixture.artifact);
   expect(state.socket_path).toMatch(
     /herdr-web-client-testfixture-[^/]+\/herdr\.sock$/,
   );
-  expect(state.oidc_issuer_requests).toBe(0);
-  expect(state.oidc_jwks_requests).toBeGreaterThan(0);
-  expect(state.forwarded_header_values.length).toBeGreaterThan(0);
   expect(state.session_markers).toEqual(['session']);
-  expect(state.injected_headers).toBe(state.total_requests);
-  expect(state.forwarded_header_values.every((count) => count === 1)).toBe(
-    true,
-  );
-  expect(state.websocket_header_values).toEqual([1]);
   expect(state.websocket_hosts).toEqual([new URL(fixture.origin).host]);
   expect(state.websocket_origins).toEqual([fixture.origin]);
   expect(state.websocket_protocols).toEqual(['herdr-web-client.v1']);

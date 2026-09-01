@@ -1,15 +1,17 @@
 # Herdr Web
 
-Herdr Web is a self-hosted browser terminal for a running Herdr installation. One Linux executable serves the embedded web client, validates an OIDC assertion injected by your reverse proxy, and bridges one authenticated browser session to `herdr client` in a same-user PTY.
+Herdr Web is a self-hosted browser terminal for a running Herdr installation. One Linux executable serves the embedded web client and bridges one browser session to `herdr client` in a same-user PTY.
 
-The design is fail-closed: a loopback-only listener, exact `Host`/`Origin` checks, a single-use subject-bound session nonce, one active attachment per process, bounded queues and deadlines, and direct `herdr client` execution with a filtered child environment. There is no built-in login page and no container image; the reverse proxy is the public TLS and authentication boundary.
+Herdr Web does not provide authentication or user authorization. Anyone who can reach it can open a terminal as the service account. You are responsible for securing access with whatever controls fit your deployment.
+
+The runtime limits its own surface with a loopback-only listener, exact `Host`/`Origin` checks, a single-use session nonce, one active attachment per process, bounded queues and deadlines, and direct `herdr client` execution with a filtered child environment. There is no container image.
 
 ## Requirements
 
 - Linux `amd64` or `arm64`.
 - Per-user systemd 254 or newer (unit supplied below). Never run it as a system service or as root.
 - An `herdr` executable and Herdr Unix socket on the same account.
-- An HTTPS reverse proxy that enforces the OIDC contract below.
+- A browser-reachable HTTPS origin for the loopback listener.
 - Chromium is the only browser with a compatibility guarantee.
 
 ## Install
@@ -37,16 +39,12 @@ scripts/build "$HOME/.local/bin/herdr-web-client"
 
 ## Configure
 
-The service reads `~/.config/herdr-web-client/env` (dotenv syntax; systemd does not expand `$HOME` in it). The four authentication values have no defaults, and an explicitly empty value is an error. Keep the file mode `0600`.
+The service reads `~/.config/herdr-web-client/env` (dotenv syntax; systemd does not expand `$HOME` in it). The public origin has no default, and an explicitly empty value is an error. Keep the file mode `0600`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HERDR_WEB_CLIENT_LISTEN_ADDR` | `127.0.0.1:8080` | Numeric loopback `host:port` only. |
 | `HERDR_WEB_CLIENT_PUBLIC_ORIGIN` | required | Exact browser-canonical HTTPS origin: no path, query, fragment, or user info, and omit the default `:443`. Its host must equal the forwarded `Host`. |
-| `HERDR_WEB_CLIENT_OIDC_ISSUER` | required | Absolute HTTPS issuer URL, checked against the JWT `iss` claim. |
-| `HERDR_WEB_CLIENT_OIDC_AUDIENCE` | required | Exact audience, checked against the JWT `aud` claim. |
-| `HERDR_WEB_CLIENT_OIDC_ASSERTION_HEADER` | required | Name of the header your proxy injects the JWT into. Must be a legal field name; `Host`, `Origin`, `Cookie`, and the HTTP framing and WebSocket handshake headers are reserved and rejected. |
-| `HERDR_WEB_CLIENT_OIDC_JWKS_URL` | OIDC discovery | Absolute HTTPS JWKS URL; by default the key set is discovered from the issuer. |
 | `HERDR_WEB_CLIENT_HERDR_PATH` | `~/.local/bin/herdr` | Absolute path to the Herdr executable; always run with the fixed `client` argument, never through a shell. |
 | `HERDR_WEB_CLIENT_HERDR_WORKDIR` | `~` | Absolute working directory for the PTY child. |
 | `HERDR_WEB_CLIENT_HERDR_SOCKET` | `~/.config/herdr/herdr.sock` | Absolute path of the Herdr Unix socket for completion events. |
@@ -57,22 +55,13 @@ A minimal environment file:
 
 ```dotenv
 HERDR_WEB_CLIENT_PUBLIC_ORIGIN=https://terminal.example
-HERDR_WEB_CLIENT_OIDC_ISSUER=https://identity.example/tenant
-HERDR_WEB_CLIENT_OIDC_AUDIENCE=herdr-web-client
-HERDR_WEB_CLIENT_OIDC_ASSERTION_HEADER=Proxy-Auth-Assertion
 ```
 
-## Reverse proxy
+## Secure access
 
-The app expects requests that are already authenticated. Configure the proxy to:
+Herdr Web intentionally has no authentication mechanism. Do not expose it to users you do not trust. Protect it using the approach appropriate for your environment, such as a private network, VPN, SSH tunnel, firewall policy, or an access-controlled gateway. The project does not require a particular authentication provider or reverse proxy.
 
-1. terminate public TLS and forward only to the loopback listener;
-2. authenticate the user with an OIDC provider and obtain a signed RS256 JWT whose issuer and audience match the configuration;
-3. remove every client-supplied copy of the assertion header, then inject exactly one header with exactly one JWT value;
-4. preserve the public `Host` exactly, and for WebSocket upgrades the exact browser `Origin` and exactly one `Sec-WebSocket-Protocol: herdr-web-client.v1`;
-5. forward the `X-Herdr-Web-Client-Request: session` marker on `GET /api/session` (the marker itself is not authentication).
-
-The server verifies the JWT's issuer, audience, expiry, and signature on every request. For Cloudflare Access, the assertion header is `Cf-Access-Jwt-Assertion`; issuer and audience remain deployment-specific.
+Whatever carries traffic between the browser and the loopback listener must preserve the configured public `Host`. WebSocket upgrades must also preserve the exact browser `Origin` and `Sec-WebSocket-Protocol: herdr-web-client.v1`. The browser sends `X-Herdr-Web-Client-Request: session` on `GET /api/session`; this marker is a protocol check, not authentication.
 
 ## Run
 
@@ -86,11 +75,10 @@ Run it as the account that owns the Herdr executable, PTY, and socket — the sa
 
 ## Troubleshooting
 
-- **The service exits immediately.** Read `journalctl --user -u herdr-web-client.service -e`. Startup fails closed on a missing or empty required value, a non-HTTPS URL, a non-loopback listener, a reserved assertion-header name, or a non-absolute path.
-- **401.** The proxy did not inject exactly one valid JWT (expired, wrong issuer or audience, or a failed signature check).
+- **The service exits immediately.** Read `journalctl --user -u herdr-web-client.service -e`. Startup fails closed on a missing required value, a non-HTTPS public origin, a non-loopback listener, or a non-absolute path.
 - **403.** The WebSocket `Origin` or the `/api/session` marker is missing or does not match exactly.
-- **404.** The forwarded `Host` differs from `HERDR_WEB_CLIENT_PUBLIC_ORIGIN`.
-- **The WebSocket does not attach.** The proxy must support upgrades and forward exactly one `herdr-web-client.v1` value. Nonces are single-use, and only one attachment can be active at a time.
+- **404.** The request `Host` differs from `HERDR_WEB_CLIENT_PUBLIC_ORIGIN`.
+- **The WebSocket does not attach.** The network path must support upgrades and preserve exactly one `herdr-web-client.v1` value. Nonces are single-use, and only one attachment can be active at a time.
 - **The terminal is silent or exits.** Check that `HERDR_WEB_CLIENT_HERDR_PATH` is executable, the workdir exists, and the socket at `HERDR_WEB_CLIENT_HERDR_SOCKET` is reachable as the service user. The web client does not launch a shell or repair a broken Herdr installation.
 
 ## Development

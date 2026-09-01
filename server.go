@@ -29,35 +29,24 @@ var errNonceCapacity = errors.New("too many outstanding session nonces")
 //go:embed web/dist
 var webDist embed.FS
 
-type nonceEntry struct {
-	subject   string
-	expiresAt time.Time
-}
-
 type nonceStore struct {
 	mu    sync.Mutex
 	ttl   time.Duration
-	items map[string]nonceEntry
+	items map[string]time.Time
 }
 
 func newNonceStore(ttl time.Duration) *nonceStore {
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
-	return &nonceStore{ttl: ttl, items: make(map[string]nonceEntry)}
+	return &nonceStore{ttl: ttl, items: make(map[string]time.Time)}
 }
 
-func (n *nonceStore) issue(subject string, identityExpiry, now time.Time) (string, time.Time, error) {
-	if n == nil || subject == "" {
-		return "", time.Time{}, errors.New("cannot issue nonce without a subject")
+func (n *nonceStore) issue(now time.Time) (string, time.Time, error) {
+	if n == nil {
+		return "", time.Time{}, errors.New("cannot issue nonce without a store")
 	}
 	deadline := now.Add(n.ttl)
-	if !identityExpiry.IsZero() && identityExpiry.Before(deadline) {
-		deadline = identityExpiry
-	}
-	if !deadline.After(now) {
-		return "", time.Time{}, errors.New("identity is expired")
-	}
 
 	bytes := make([]byte, 32)
 	if _, err := rand.Read(bytes); err != nil {
@@ -71,26 +60,23 @@ func (n *nonceStore) issue(subject string, identityExpiry, now time.Time) (strin
 	if len(n.items) >= maxOutstandingNonces {
 		return "", time.Time{}, errNonceCapacity
 	}
-	n.items[nonce] = nonceEntry{subject: subject, expiresAt: deadline}
+	n.items[nonce] = deadline
 	return nonce, deadline, nil
 }
 
-func (n *nonceStore) consume(nonce, subject string, now time.Time) bool {
-	if n == nil || nonce == "" || subject == "" {
+func (n *nonceStore) consume(nonce string, now time.Time) bool {
+	if n == nil || nonce == "" {
 		return false
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	entry, ok := n.items[nonce]
+	expiresAt, ok := n.items[nonce]
 	if !ok {
 		n.pruneLocked(now)
 		return false
 	}
-	if !entry.expiresAt.After(now) {
+	if !expiresAt.After(now) {
 		delete(n.items, nonce)
-		return false
-	}
-	if entry.subject != subject {
 		return false
 	}
 	delete(n.items, nonce)
@@ -98,8 +84,8 @@ func (n *nonceStore) consume(nonce, subject string, now time.Time) bool {
 }
 
 func (n *nonceStore) pruneLocked(now time.Time) {
-	for token, entry := range n.items {
-		if !entry.expiresAt.After(now) {
+	for token, expiresAt := range n.items {
+		if !expiresAt.After(now) {
 			delete(n.items, token)
 		}
 	}
@@ -117,7 +103,6 @@ type activeAttachment struct {
 
 type Server struct {
 	cfg         Config
-	auth        Authenticator
 	launcher    Launcher
 	completions AgentCompletionSource
 	socketSlots chan struct{}
@@ -131,15 +116,12 @@ type Server struct {
 	closeOnce sync.Once
 }
 
-// NewServer constructs the protected HTTP/WebSocket surface. It does not
-// start listening; main owns the net/http lifecycle.
-func NewServer(cfg Config, auth Authenticator, launcher Launcher, completions AgentCompletionSource) (*Server, error) {
+// NewServer constructs the HTTP/WebSocket surface. It does not start
+// listening; main owns the net/http lifecycle.
+func NewServer(cfg Config, launcher Launcher, completions AgentCompletionSource) (*Server, error) {
 	cfg = cfg.withDefaults()
 	if err := cfg.validateServer(); err != nil {
 		return nil, err
-	}
-	if auth == nil {
-		return nil, errors.New("authenticator is required")
 	}
 	if launcher == nil {
 		return nil, errors.New("PTY launcher is required")
@@ -152,7 +134,6 @@ func NewServer(cfg Config, auth Authenticator, launcher Launcher, completions Ag
 	return &Server{
 		cfg:         cfg,
 		socketSlots: make(chan struct{}, 1),
-		auth:        auth,
 		launcher:    launcher,
 		completions: completions,
 		nonces:      newNonceStore(cfg.NonceTTL),
@@ -277,48 +258,24 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	identity, ok := s.authenticate(w, r)
-	if !ok {
-		return
-	}
 	if s.socketBusy() {
 		http.Error(w, "another attachment is already active", http.StatusConflict)
 		return
 	}
 	now := time.Now()
-	nonce, expiresAt, err := s.nonces.issue(identity.Subject, identity.ExpiresAt, now)
+	nonce, expiresAt, err := s.nonces.issue(now)
 	if errors.Is(err, errNonceCapacity) {
 		http.Error(w, "too many pending sessions", http.StatusTooManyRequests)
 		return
 	}
 	if err != nil {
-		http.Error(w, "unable to create session", http.StatusUnauthorized)
+		http.Error(w, "unable to create session", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
-		Email     string    `json:"email"`
 		Nonce     string    `json:"nonce"`
 		ExpiresAt time.Time `json:"expires_at"`
-	}{Email: identity.Email, Nonce: nonce, ExpiresAt: expiresAt})
-}
-
-func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (Identity, bool) {
-	values := r.Header.Values(s.cfg.AssertionHeader)
-	if len(values) != 1 || values[0] == "" || strings.TrimSpace(values[0]) != values[0] || strings.Contains(values[0], ",") {
-		unauthorized(w)
-		return Identity{}, false
-	}
-	identity, err := s.auth.Authenticate(r.Context(), values[0])
-	if err != nil || identity.Subject == "" || identity.ExpiresAt.IsZero() || !identity.ExpiresAt.After(time.Now()) {
-		unauthorized(w)
-		return Identity{}, false
-	}
-	return identity, true
-}
-
-func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	}{Nonce: nonce, ExpiresAt: expiresAt})
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -331,9 +288,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if s.assets == nil {
 		http.NotFound(w, r)
-		return
-	}
-	if _, ok := s.authenticate(w, r); !ok {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/assets/") {
@@ -355,10 +309,6 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	identity, ok := s.authenticate(w, r)
-	if !ok {
-		return
-	}
 	if !s.claimSocket() {
 		http.Error(w, "another attachment is already active", http.StatusConflict)
 		return
@@ -406,21 +356,12 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		writeAttachError(conn, "invalid hello message", websocket.ClosePolicyViolation)
 		return
 	}
-	if !s.nonces.consume(nonce, identity.Subject, time.Now()) {
+	if !s.nonces.consume(nonce, time.Now()) {
 		writeAttachError(conn, "invalid or expired session", websocket.ClosePolicyViolation)
 		return
 	}
 
 	attachCtx, cancel := context.WithCancel(s.ctx)
-	if !identity.ExpiresAt.IsZero() {
-		var deadlineCancel context.CancelFunc
-		attachCtx, deadlineCancel = context.WithDeadline(attachCtx, identity.ExpiresAt)
-		oldCancel := cancel
-		cancel = func() {
-			deadlineCancel()
-			oldCancel()
-		}
-	}
 	if !s.claimActive(cancel) {
 		cancel()
 		writeAttachError(conn, "another attachment is already active", websocket.CloseTryAgainLater)
@@ -430,7 +371,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := attachCtx.Err(); err != nil {
-		writeAttachError(conn, "session expired", websocket.ClosePolicyViolation)
+		writeAttachError(conn, "server is shutting down", websocket.CloseGoingAway)
 		return
 	}
 	session, err := s.launcher.Start(attachCtx, dimensions.Cols, dimensions.Rows)
@@ -452,7 +393,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		closeErr := session.Close()
 		_, waitErr := session.Wait()
 		quarantine(errors.Join(closeErr, waitErr))
-		writeAttachError(conn, "session expired", websocket.ClosePolicyViolation)
+		writeAttachError(conn, "server is shutting down", websocket.CloseGoingAway)
 		return
 	}
 	quarantine(runBridge(attachCtx, conn, session, s.completions, s.cfg))

@@ -178,11 +178,8 @@ for arch in amd64 arm64; do
     fi
   done
   for module_prefix in \
-    github.com__coreos__go-oidc__v3 \
     github.com__creack__pty \
-    github.com__go-jose__go-jose__v4 \
     github.com__gorilla__websocket \
-    golang.org__x__oauth2 \
     golang.org__x__sys \
     golang.org__x__term; do
     module_licenses=("$license_dir/${module_prefix}"@*-LICENSE*)
@@ -191,11 +188,6 @@ for arch in amd64 arm64; do
       exit 1
     fi
   done
-  coreos_notices=("$license_dir"/github.com__coreos__go-oidc__v3@*-NOTICE*)
-  if [[ ${#coreos_notices[@]} != 1 || ! -s ${coreos_notices[0]} ]]; then
-    printf 'archive lacks the upstream CoreOS notice\n' >&2
-    exit 1
-  fi
   for module_prefix in golang.org__x__sys golang.org__x__term; do
     module_patents=("$license_dir/${module_prefix}"@*-PATENTS*)
     if [[ ${#module_patents[@]} != 1 || ! -s ${module_patents[0]} ]]; then

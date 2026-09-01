@@ -189,17 +189,14 @@ The following modules are direct dependencies of the executable. The binary also
 
 | Module | Version | Role | License |
 | --- | --- | --- | --- |
-| `github.com/coreos/go-oidc/v3` | v3.20.0 | OIDC discovery and ID-token verification | Apache License 2.0; upstream CoreOS notice shipped in `LICENSES/` |
 | `github.com/creack/pty` | v1.1.24 | PTY allocation and I/O | MIT |
 | `github.com/gorilla/websocket` | v1.5.3 | WebSocket transport | BSD 2-Clause |
 | `golang.org/x/term` | v0.45.0 | Terminal support | BSD 3-Clause |
-| `github.com/go-jose/go-jose/v4` | v4.1.4 | Runtime-transitive JOSE implementation | Apache License 2.0 |
-| `golang.org/x/oauth2` | v0.36.0 | Direct OIDC HTTP dependency | BSD 3-Clause |
 | `golang.org/x/sys` | v0.47.0 | Runtime-transitive platform support | BSD 3-Clause |
 
 ### Apache License 2.0
 
-This license applies to `github.com/coreos/go-oidc/v3` v3.20.0, `github.com/go-jose/go-jose/v4` v4.1.4, `@biomejs/biome` 2.5.11 (one of its offered licenses), and `playwright`/`playwright-core` 1.62.1.
+This license applies to `@biomejs/biome` 2.5.11 (one of its offered licenses) and `playwright`/`playwright-core` 1.62.1.
 
 ```text
 Apache License

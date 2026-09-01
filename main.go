@@ -46,13 +46,9 @@ func run(parent context.Context) error {
 
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	authenticator, err := newOIDCAuthenticator(ctx, cfg.Issuer, cfg.Audience, cfg.JWKSURL)
-	if err != nil {
-		return err
-	}
 	launcher := NewPTYLauncher(cfg.HerdrPath, cfg.HerdrWorkdir)
 	completions := newHerdrCompletionSource(cfg.HerdrSocket)
-	application, err := NewServer(cfg, authenticator, launcher, completions)
+	application, err := NewServer(cfg, launcher, completions)
 	if err != nil {
 		return err
 	}

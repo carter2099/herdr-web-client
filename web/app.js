@@ -63,7 +63,6 @@ const app = elementById('app');
 const terminalStage = elementById('terminal-stage');
 const terminalElement = elementById('terminal');
 const statusLabel = elementById('status-label');
-const identityLabel = elementById('identity');
 const connectionPanel = elementById('connection-panel');
 const connectionTitle = elementById('connection-title');
 const connectionDetail = elementById('connection-detail');
@@ -358,7 +357,7 @@ function stateView(state, context = {}) {
       return {
         status: 'Connecting',
         title: 'Connecting to Herdr',
-        detail: context.detail || 'Checking your sign-in session…',
+        detail: context.detail || 'Starting the terminal session…',
         busy: true,
       };
     case 'reconnecting': {
@@ -391,13 +390,6 @@ function stateView(state, context = {}) {
         title: 'You’re offline',
         detail: 'Keystrokes are not queued.',
         action: 'Check again',
-      };
-    case 'auth':
-      return {
-        status: 'Authentication expired',
-        title: 'Authentication session expired',
-        detail: 'Reload to sign in again.',
-        action: 'Reload',
       };
     case 'ended':
       return {
@@ -999,7 +991,6 @@ if ('ResizeObserver' in window) {
   terminalResizeObserver.observe(terminalStage);
 }
 
-class AuthenticationSessionError extends Error {}
 class AttachmentLimitError extends Error {}
 
 async function requestSession(signal) {
@@ -1021,58 +1012,47 @@ async function requestSession(signal) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error;
     }
-    throw new Error('The authentication session request failed.');
+    throw new Error('The session request failed.');
   }
 
   if (
     response.type === 'opaqueredirect' ||
     (response.status >= 300 && response.status < 400)
   ) {
-    throw new AuthenticationSessionError('Sign-in is required.');
-  }
-  if (response.status === 401 || response.status === 403) {
-    throw new AuthenticationSessionError('The authentication session expired.');
+    throw new Error('The session request was redirected.');
   }
   if (response.status === 409) {
     throw new AttachmentLimitError(ACTIVE_ATTACHMENT_MESSAGE);
   }
   if (!response.ok) {
-    throw new Error(
-      `The authentication session request returned ${response.status}.`,
-    );
+    throw new Error(`The session request returned ${response.status}.`);
   }
 
   const responseOrigin = new URL(response.url, window.location.href).origin;
   if (response.redirected && responseOrigin !== window.location.origin) {
-    throw new AuthenticationSessionError('Sign-in is required.');
+    throw new Error('The session request was redirected.');
   }
 
   let payload;
   try {
     payload = await response.json();
   } catch {
-    throw new AuthenticationSessionError(
-      'The authentication session response was not available.',
-    );
+    throw new Error('The session response was not available.');
   }
 
   const validPayload =
     payload &&
     typeof payload === 'object' &&
-    typeof payload.email === 'string' &&
     typeof payload.nonce === 'string' &&
     payload.nonce.length > 0 &&
     typeof payload.expires_at === 'string' &&
     Number.isFinite(Date.parse(payload.expires_at));
 
   if (!validPayload) {
-    throw new Error('The authentication session response was invalid.');
+    throw new Error('The session response was invalid.');
   }
 
-  return {
-    email: payload.email,
-    nonce: payload.nonce,
-  };
+  return { nonce: payload.nonce };
 }
 
 function attachURL() {
@@ -1085,12 +1065,6 @@ function attachURL() {
     throw new Error('Herdr requires an HTTP or HTTPS origin.');
   }
   return url.href;
-}
-
-function looksLikeAuthenticationError(message) {
-  return /(?:access|auth(?:entication|orization)?|jwt|session).*(?:expired|invalid|required|denied)|unauthori[sz]ed/i.test(
-    message,
-  );
 }
 
 function protocolFailure(context, websocket, detail) {
@@ -1216,9 +1190,6 @@ function handleServerControl(context, websocket, data) {
           context.finalState = { state: 'limited' };
           setConnectionState('limited');
         }
-      } else if (looksLikeAuthenticationError(serverMessage)) {
-        context.finalState = { state: 'auth' };
-        setConnectionState('auth');
       } else {
         const detail = conciseMessage(serverMessage);
         context.finalState = { state: 'error', detail };
@@ -1418,8 +1389,8 @@ async function beginConnection({
   sessionController = new AbortController();
   setConnectionState('connecting', {
     detail: automatic
-      ? 'Refreshing your sign-in session…'
-      : 'Checking your sign-in session…',
+      ? 'Refreshing the terminal session…'
+      : 'Starting the terminal session…',
   });
 
   try {
@@ -1428,9 +1399,6 @@ async function beginConnection({
       return;
     }
     sessionController = null;
-    identityLabel.textContent = session.email;
-    identityLabel.setAttribute('aria-label', `Signed in as ${session.email}`);
-    identityLabel.hidden = session.email.length === 0;
     openAttachment(session, generation, automatic);
   } catch (error) {
     if (
@@ -1440,9 +1408,7 @@ async function beginConnection({
       return;
     }
     sessionController = null;
-    if (error instanceof AuthenticationSessionError) {
-      setConnectionState('auth');
-    } else if (error instanceof AttachmentLimitError && !automatic) {
+    if (error instanceof AttachmentLimitError && !automatic) {
       setConnectionState('limited');
     } else if (automatic) {
       scheduleReconnect();
@@ -1489,10 +1455,6 @@ async function pasteFromClipboard() {
 }
 
 connectionAction.addEventListener('click', () => {
-  if (connectionState === 'auth') {
-    window.location.reload();
-    return;
-  }
   void beginConnection({ resetBackoff: true });
 });
 terminalElement.addEventListener('pointerdown', beginTerminalPointer, {

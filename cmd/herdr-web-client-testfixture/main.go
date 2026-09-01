@@ -4,15 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -37,14 +34,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	webSocketSubprotocol = "herdr-web-client.v1"
-	authHeader           = "X-Herdr-Web-Client-Assertion"
-	fixtureAudience      = "herdr-web-client-test"
-	fixtureSubject       = "fixture-user"
-	fixtureEmail         = "fixture@example.test"
-	fixtureKeyID         = "herdr-web-client-fixture"
-)
+const webSocketSubprotocol = "herdr-web-client.v1"
 
 type clientEvent struct {
 	Kind     string            `json:"kind"`
@@ -244,8 +234,6 @@ type fixtureState struct {
 	mu sync.Mutex
 
 	origin            string
-	issuer            string
-	jwksURL           string
 	targetPath        string
 	privateTargetAddr string
 	targetPID         int
@@ -253,14 +241,11 @@ type fixtureState struct {
 	targetExitCode    int
 	socketPath        string
 	recordPath        string
-	caPath            string
 
 	totalRequests        int
 	sessionRequests      int
 	sessionMarkers       []string
 	attachRequests       int
-	injectedHeaders      int
-	forwardedHeaderVals  []int
 	nonceCount           int
 	nonces               []string
 	websocketConnections int
@@ -270,9 +255,6 @@ type fixtureState struct {
 	wsHosts              []string
 	wsOrigins            []string
 	wsProtocols          []string
-	websocketHeaderVals  []int
-	oidcIssuerRequests   int
-	oidcJWKSRequests     int
 	snapshotRequests     int
 	subscriptionRequests int
 	reconcileSnapshots   int
@@ -282,21 +264,16 @@ type fixtureState struct {
 
 type fixtureStateView struct {
 	Origin               string        `json:"origin"`
-	Issuer               string        `json:"issuer"`
-	JWKSURL              string        `json:"jwks_url"`
 	TargetPath           string        `json:"target_path"`
 	TargetPID            int           `json:"target_pid"`
 	TargetExited         bool          `json:"target_exited"`
 	TargetExitCode       int           `json:"target_exit_code"`
 	SocketPath           string        `json:"socket_path"`
 	RecordPath           string        `json:"record_path"`
-	CAPath               string        `json:"ca_path"`
 	TotalRequests        int           `json:"total_requests"`
 	SessionRequests      int           `json:"session_requests"`
 	SessionMarkers       []string      `json:"session_markers"`
 	AttachRequests       int           `json:"attach_requests"`
-	InjectedHeaders      int           `json:"injected_headers"`
-	ForwardedHeaderVals  []int         `json:"forwarded_header_values"`
 	NonceCount           int           `json:"nonce_count"`
 	Nonces               []string      `json:"nonces"`
 	WebSocketConnections int           `json:"websocket_connections"`
@@ -306,9 +283,6 @@ type fixtureStateView struct {
 	WSHosts              []string      `json:"websocket_hosts"`
 	WSOrigins            []string      `json:"websocket_origins"`
 	WSProtocols          []string      `json:"websocket_protocols"`
-	WebSocketHeaderVals  []int         `json:"websocket_header_values"`
-	OIDCIssuerRequests   int           `json:"oidc_issuer_requests"`
-	OIDCJWKSRequests     int           `json:"oidc_jwks_requests"`
 	SnapshotRequests     int           `json:"snapshot_requests"`
 	SubscriptionRequests int           `json:"subscription_requests"`
 	ReconcileSnapshots   int           `json:"reconcile_snapshots"`
@@ -321,21 +295,16 @@ func (s *fixtureState) view() fixtureStateView {
 	s.mu.Lock()
 	view := fixtureStateView{
 		Origin:               s.origin,
-		Issuer:               s.issuer,
-		JWKSURL:              s.jwksURL,
 		TargetPath:           s.targetPath,
 		TargetPID:            s.targetPID,
 		TargetExited:         s.targetExited,
 		TargetExitCode:       s.targetExitCode,
 		SocketPath:           s.socketPath,
 		RecordPath:           s.recordPath,
-		CAPath:               s.caPath,
 		TotalRequests:        s.totalRequests,
 		SessionRequests:      s.sessionRequests,
 		SessionMarkers:       append([]string(nil), s.sessionMarkers...),
 		AttachRequests:       s.attachRequests,
-		InjectedHeaders:      s.injectedHeaders,
-		ForwardedHeaderVals:  append([]int(nil), s.forwardedHeaderVals...),
 		NonceCount:           s.nonceCount,
 		Nonces:               append([]string(nil), s.nonces...),
 		WebSocketConnections: s.websocketConnections,
@@ -345,9 +314,6 @@ func (s *fixtureState) view() fixtureStateView {
 		WSHosts:              append([]string(nil), s.wsHosts...),
 		WSOrigins:            append([]string(nil), s.wsOrigins...),
 		WSProtocols:          append([]string(nil), s.wsProtocols...),
-		WebSocketHeaderVals:  append([]int(nil), s.websocketHeaderVals...),
-		OIDCIssuerRequests:   s.oidcIssuerRequests,
-		OIDCJWKSRequests:     s.oidcJWKSRequests,
 		SnapshotRequests:     s.snapshotRequests,
 		SubscriptionRequests: s.subscriptionRequests,
 		ReconcileSnapshots:   s.reconcileSnapshots,
@@ -359,7 +325,7 @@ func (s *fixtureState) view() fixtureStateView {
 	return view
 }
 
-func (s *fixtureState) noteRequest(path string, forwardedHeaderValues int, sessionMarker string) {
+func (s *fixtureState) noteRequest(path, sessionMarker string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.totalRequests++
@@ -370,8 +336,6 @@ func (s *fixtureState) noteRequest(path string, forwardedHeaderValues int, sessi
 	if path == "/api/attach" {
 		s.attachRequests++
 	}
-	s.injectedHeaders++
-	s.forwardedHeaderVals = append(s.forwardedHeaderVals, forwardedHeaderValues)
 }
 
 func (s *fixtureState) noteSessionNonce(nonce string) {
@@ -409,19 +373,14 @@ type fixture struct {
 	state  *fixtureState
 
 	rootDir    string
-	caPool     *x509.CertPool
 	serverCert tls.Certificate
-	caPath     string
-	proxyToken string
 
 	target     *exec.Cmd
 	targetDone chan struct{}
 
 	proxyServer     *http.Server
-	issuerServer    *http.Server
 	controlServer   *http.Server
 	proxyListener   net.Listener
-	issuerListener  net.Listener
 	controlListener net.Listener
 	unixListener    net.Listener
 
@@ -435,12 +394,9 @@ type fixtureManifest struct {
 	Type       string `json:"type"`
 	Origin     string `json:"origin"`
 	ControlURL string `json:"control_url"`
-	CAPath     string `json:"ca_path"`
 	RecordPath string `json:"record_path"`
 	TargetPath string `json:"target_path"`
 	TargetPID  int    `json:"target_pid"`
-	Issuer     string `json:"issuer"`
-	JWKSURL    string `json:"jwks_url"`
 }
 
 func runSupervisor(targetPath string) error {
@@ -491,22 +447,15 @@ func newFixture(targetPath string) (*fixture, error) {
 }
 
 func (f *fixture) start() (fixtureManifest, error) {
-	ca, cert, pool, err := createCertificateAuthority(f.rootDir)
+	cert, err := createServerCertificate()
 	if err != nil {
 		return fixtureManifest{}, err
 	}
-	f.caPool = pool
 	f.serverCert = cert
-	f.caPath = ca
 	f.state.mu.Lock()
-	f.state.caPath = ca
 	f.state.socketPath = filepath.Join(f.rootDir, "herdr.sock")
 	f.state.mu.Unlock()
 
-	if err := f.startOIDC(); err != nil {
-		f.shutdown()
-		return fixtureManifest{}, err
-	}
 	if err := f.startControl(); err != nil {
 		f.shutdown()
 		return fixtureManifest{}, err
@@ -533,65 +482,10 @@ func (f *fixture) start() (fixtureManifest, error) {
 		Type:       "ready",
 		Origin:     view.Origin,
 		ControlURL: controlURL(f.controlListener),
-		CAPath:     view.CAPath,
 		RecordPath: view.RecordPath,
 		TargetPath: view.TargetPath,
 		TargetPID:  view.TargetPID,
-		Issuer:     view.Issuer,
-		JWKSURL:    view.JWKSURL,
 	}, nil
-}
-
-func (f *fixture) startOIDC() error {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return fmt.Errorf("listen OIDC issuer: %w", err)
-	}
-	f.issuerListener = listener
-	base := "https://" + listener.Addr().String()
-	issuer := base + "/tenant-fixture"
-	jwksURL := issuer + "/jwks"
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return fmt.Errorf("generate OIDC signing key: %w", err)
-	}
-	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{rsaJWK(&privateKey.PublicKey)}})
-	if err != nil {
-		return fmt.Errorf("encode OIDC JWKS: %w", err)
-	}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.state.mu.Lock()
-		switch r.URL.Path {
-		case "/tenant-fixture/jwks":
-			f.state.oidcJWKSRequests++
-		case "/tenant-fixture/.well-known/openid-configuration", "/.well-known/openid-configuration":
-			f.state.oidcIssuerRequests++
-		}
-		f.state.mu.Unlock()
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		switch r.URL.Path {
-		case "/tenant-fixture/jwks":
-			_, _ = w.Write(jwks)
-		case "/tenant-fixture/.well-known/openid-configuration", "/.well-known/openid-configuration":
-			_ = json.NewEncoder(w).Encode(map[string]string{"issuer": issuer, "jwks_uri": jwksURL})
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	f.issuerServer = newTLSServer(listener, f.serverCert, handler)
-	go func() { _ = f.issuerServer.Serve(tls.NewListener(listener, f.issuerServer.TLSConfig)) }()
-
-	token, err := signJWT(privateKey, issuer, fixtureAudience, fixtureSubject, fixtureEmail)
-	if err != nil {
-		return err
-	}
-	f.state.mu.Lock()
-	f.state.issuer = issuer
-	f.state.jwksURL = jwksURL
-	f.state.mu.Unlock()
-	f.proxyToken = token
-	return nil
 }
 
 func (f *fixture) startControl() error {
@@ -615,7 +509,7 @@ func (f *fixture) startProxy() error {
 	f.state.mu.Lock()
 	f.state.origin = origin
 	f.state.mu.Unlock()
-	proxy := &authProxy{fixture: f, authHeader: authHeader}
+	proxy := &fixtureProxy{fixture: f}
 	f.proxyServer = newTLSServer(listener, f.serverCert, proxy)
 	go func() { _ = f.proxyServer.Serve(tls.NewListener(listener, f.proxyServer.TLSConfig)) }()
 	return nil
@@ -652,7 +546,7 @@ func (f *fixture) startTarget() error {
 		return fmt.Errorf("resolve fixture executable path: %w", err)
 	}
 	view := f.state.view()
-	env := buildTargetEnvironment(targetAddr, view.Origin, view.Issuer, view.JWKSURL, view.SocketPath, view.RecordPath, view.CAPath, self, f.rootDir)
+	env := buildTargetEnvironment(targetAddr, view.Origin, view.SocketPath, self, f.rootDir)
 	cmd := exec.Command(view.TargetPath)
 	cmd.Env = env
 	cmd.Stdout = io.Discard
@@ -678,26 +572,21 @@ func (f *fixture) startTarget() error {
 	return nil
 }
 
-func buildTargetEnvironment(targetAddr, origin, issuer, jwksURL, socketPath, recordPath, caPath, fakePath, workdir string) []string {
+func buildTargetEnvironment(targetAddr, origin, socketPath, fakePath, workdir string) []string {
 	values := map[string]string{
-		"HOME":          workdir,
-		"USER":          "fixture",
-		"LOGNAME":       "fixture",
-		"PATH":          filepath.Dir(fakePath) + ":/usr/local/bin:/usr/bin:/bin",
-		"TERM":          "xterm-256color",
-		"LANG":          "C.UTF-8",
-		"NO_PROXY":      "127.0.0.1,localhost",
-		"SSL_CERT_FILE": caPath,
+		"HOME":     workdir,
+		"USER":     "fixture",
+		"LOGNAME":  "fixture",
+		"PATH":     filepath.Dir(fakePath) + ":/usr/local/bin:/usr/bin:/bin",
+		"TERM":     "xterm-256color",
+		"LANG":     "C.UTF-8",
+		"NO_PROXY": "127.0.0.1,localhost",
 
-		"HERDR_WEB_CLIENT_LISTEN_ADDR":           targetAddr,
-		"HERDR_WEB_CLIENT_PUBLIC_ORIGIN":         origin,
-		"HERDR_WEB_CLIENT_OIDC_ISSUER":           issuer,
-		"HERDR_WEB_CLIENT_OIDC_AUDIENCE":         fixtureAudience,
-		"HERDR_WEB_CLIENT_OIDC_ASSERTION_HEADER": authHeader,
-		"HERDR_WEB_CLIENT_OIDC_JWKS_URL":         jwksURL,
-		"HERDR_WEB_CLIENT_HERDR_PATH":            fakePath,
-		"HERDR_WEB_CLIENT_HERDR_WORKDIR":         workdir,
-		"HERDR_WEB_CLIENT_HERDR_SOCKET":          socketPath,
+		"HERDR_WEB_CLIENT_LISTEN_ADDR":   targetAddr,
+		"HERDR_WEB_CLIENT_PUBLIC_ORIGIN": origin,
+		"HERDR_WEB_CLIENT_HERDR_PATH":    fakePath,
+		"HERDR_WEB_CLIENT_HERDR_WORKDIR": workdir,
+		"HERDR_WEB_CLIENT_HERDR_SOCKET":  socketPath,
 	}
 	if os.Getenv("HERDR_E2E_SYSTEMD") == "1" {
 		values["INVOCATION_ID"] = os.Getenv("INVOCATION_ID")
@@ -712,9 +601,6 @@ func buildTargetEnvironment(targetAddr, origin, issuer, jwksURL, socketPath, rec
 	legacyPrefix := "HERDR" + "_WEB_"
 	values[legacyPrefix+"LISTEN_ADDR"] = "127.0.0.1:1"
 	values[legacyPrefix+"PUBLIC_ORIGIN"] = "https://legacy.invalid"
-	values[legacyPrefix+"ACCESS_ISSUER"] = "https://legacy.invalid"
-	values[legacyPrefix+"ACCESS_AUDIENCE"] = "legacy-audience"
-	values[legacyPrefix+"AUDIENCE"] = "legacy-audience"
 	result := make([]string, 0, len(values))
 	for name, value := range values {
 		result = append(result, name+"="+value)
@@ -728,14 +614,11 @@ func (f *fixture) waitTargetReady() error {
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: f.caPool, MinVersion: tls.VersionTLS13}}
-	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
-	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 2 * time.Second}
 	for {
 		request, err := http.NewRequestWithContext(f.ctx, http.MethodGet, "http://"+targetListenAddress(f.state), nil)
 		if err == nil {
 			request.Host = view.OriginHost()
-			request.Header.Set(authHeader, f.proxyToken)
 			response, requestErr := client.Do(request)
 			if requestErr == nil {
 				_, _ = io.Copy(io.Discard, response.Body)
@@ -953,7 +836,7 @@ func (f *fixture) shutdown() {
 		if f.unixListener != nil {
 			_ = f.unixListener.Close()
 		}
-		for _, server := range []*http.Server{f.proxyServer, f.issuerServer, f.controlServer} {
+		for _, server := range []*http.Server{f.proxyServer, f.controlServer} {
 			if server != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				_ = server.Shutdown(ctx)
@@ -977,16 +860,14 @@ func (f *fixture) shutdown() {
 	})
 }
 
-// authProxy terminates fixture HTTPS and forwards to the target's HTTP server.
-// Every request has all caller-supplied assertion values removed and exactly
-// one freshly signed value injected. WebSocket Host, Origin, and subprotocol
-// are copied explicitly rather than reconstructed from the backend URL.
-type authProxy struct {
-	fixture    *fixture
-	authHeader string
+// fixtureProxy terminates fixture HTTPS and forwards to the target's HTTP
+// server. WebSocket Host, Origin, and subprotocol are copied explicitly rather
+// than reconstructed from the backend URL.
+type fixtureProxy struct {
+	fixture *fixture
 }
 
-func (p *authProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *fixtureProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isWebSocketRequest(r) {
 		p.serveWebSocket(w, r)
 		return
@@ -994,19 +875,16 @@ func (p *authProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.serveHTTP(w, r)
 }
 
-func (p *authProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *fixtureProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL, _ := url.Parse("http://" + p.fixture.state.privateTargetAddr)
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			originalHost := request.In.Host
 			request.SetURL(targetURL)
 			request.Out.Host = originalHost
-			request.Out.Header.Del(p.authHeader)
-			request.Out.Header.Set(p.authHeader, p.fixture.proxyToken)
 		},
 		ModifyResponse: func(response *http.Response) error {
-			values := response.Request.Header.Values(p.authHeader)
-			p.fixture.state.noteRequest(response.Request.URL.Path, len(values), response.Request.Header.Get("X-Herdr-Web-Client-Request"))
+			p.fixture.state.noteRequest(response.Request.URL.Path, response.Request.Header.Get("X-Herdr-Web-Client-Request"))
 			if response.Request.URL.Path == "/api/session" && response.StatusCode == http.StatusOK {
 				body, err := io.ReadAll(response.Body)
 				if err != nil {
@@ -1030,7 +908,7 @@ func (p *authProxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (p *authProxy) serveWebSocket(w http.ResponseWriter, r *http.Request) {
+func (p *fixtureProxy) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	protocolValues := r.Header.Values("Sec-WebSocket-Protocol")
 	if len(protocolValues) != 1 || protocolValues[0] != webSocketSubprotocol {
 		http.Error(w, "fixture requires Herdr Web Client protocol", http.StatusBadRequest)
@@ -1054,13 +932,8 @@ func (p *authProxy) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	backendURL := "ws://" + p.fixture.state.privateTargetAddr + r.URL.RequestURI()
 	header := make(http.Header)
-	header.Del(p.authHeader)
-	header.Set(p.authHeader, p.fixture.proxyToken)
 	header.Set("Host", r.Host)
 	header.Set("Origin", originValues[0])
-	p.fixture.state.mu.Lock()
-	p.fixture.state.websocketHeaderVals = append(p.fixture.state.websocketHeaderVals, len(header.Values(p.authHeader)))
-	p.fixture.state.mu.Unlock()
 	dialer := websocket.Dialer{Subprotocols: []string{webSocketSubprotocol}, HandshakeTimeout: 5 * time.Second}
 	backend, response, err := dialer.DialContext(r.Context(), backendURL, header)
 	if err != nil {
@@ -1125,41 +998,17 @@ func isWebSocketRequest(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") && strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
-func createCertificateAuthority(directory string) (string, tls.Certificate, *x509.CertPool, error) {
-	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+func createServerCertificate() (tls.Certificate, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return "", tls.Certificate{}, nil, fmt.Errorf("generate fixture CA key: %w", err)
+		return tls.Certificate{}, fmt.Errorf("generate fixture TLS key: %w", err)
 	}
 	serialBytes := make([]byte, 16)
 	if _, err := rand.Read(serialBytes); err != nil {
-		return "", tls.Certificate{}, nil, err
+		return tls.Certificate{}, err
 	}
-	caTemplate := &x509.Certificate{
-		SerialNumber:          new(big.Int).SetBytes(serialBytes),
-		Subject:               pkix.Name{CommonName: "Herdr web client fixture CA"},
-		NotBefore:             time.Now().Add(-time.Minute),
-		NotAfter:              time.Now().Add(2 * time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
-	if err != nil {
-		return "", tls.Certificate{}, nil, fmt.Errorf("create fixture CA certificate: %w", err)
-	}
-	caPEM := pemEncode("CERTIFICATE", caDER)
-	caPath := filepath.Join(directory, "fixture-ca.pem")
-	if err := os.WriteFile(caPath, caPEM, 0o600); err != nil {
-		return "", tls.Certificate{}, nil, err
-	}
-
-	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return "", tls.Certificate{}, nil, err
-	}
-	serverSerial := new(big.Int).SetBytes(append([]byte{1}, serialBytes...))
-	serverTemplate := &x509.Certificate{
-		SerialNumber: serverSerial,
+	template := &x509.Certificate{
+		SerialNumber: new(big.Int).SetBytes(serialBytes),
 		Subject:      pkix.Name{CommonName: "127.0.0.1"},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(2 * time.Hour),
@@ -1168,74 +1017,20 @@ func createCertificateAuthority(directory string) (string, tls.Certificate, *x50
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverKey.PublicKey, caKey)
+	certificateDER, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
 	if err != nil {
-		return "", tls.Certificate{}, nil, fmt.Errorf("create fixture TLS certificate: %w", err)
+		return tls.Certificate{}, fmt.Errorf("create fixture TLS certificate: %w", err)
 	}
 	certificate, err := tls.X509KeyPair(
-		pemEncode("CERTIFICATE", serverDER),
-		pemEncode("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(serverKey)),
+		pemEncode("CERTIFICATE", certificateDER),
+		pemEncode("RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(privateKey)),
 	)
 	if err != nil {
-		return "", tls.Certificate{}, nil, err
+		return tls.Certificate{}, err
 	}
-	pool := x509.NewCertPool()
-	pool.AddCert(mustParseCertificate(caDER))
-	return caPath, certificate, pool, nil
+	return certificate, nil
 }
 
 func pemEncode(kind string, data []byte) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: data})
-}
-
-func mustParseCertificate(data []byte) *x509.Certificate {
-	certificate, err := x509.ParseCertificate(data)
-	if err != nil {
-		panic(err)
-	}
-	return certificate
-}
-
-func rsaJWK(key *rsa.PublicKey) map[string]string {
-	modulus := key.N.Bytes()
-	exponentBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(exponentBytes, uint32(key.E))
-	exponentBytes = bytes.TrimLeft(exponentBytes, "\x00")
-	return map[string]string{
-		"kty": "RSA",
-		"use": "sig",
-		"alg": "RS256",
-		"kid": fixtureKeyID,
-		"n":   base64.RawURLEncoding.EncodeToString(modulus),
-		"e":   base64.RawURLEncoding.EncodeToString(exponentBytes),
-	}
-}
-
-func signJWT(key *rsa.PrivateKey, issuer, audience, subject, email string) (string, error) {
-	encode := func(value any) (string, error) {
-		data, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		return base64.RawURLEncoding.EncodeToString(data), nil
-	}
-	header, err := encode(map[string]string{"alg": "RS256", "kid": fixtureKeyID, "typ": "JWT"})
-	if err != nil {
-		return "", err
-	}
-	now := time.Now()
-	claims, err := encode(map[string]any{
-		"iss": issuer, "aud": audience, "sub": subject, "email": email,
-		"iat": now.Unix(), "exp": now.Add(30 * time.Minute).Unix(),
-	})
-	if err != nil {
-		return "", err
-	}
-	message := header + "." + claims
-	digest := sha256.Sum256([]byte(message))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
-	if err != nil {
-		return "", err
-	}
-	return message + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
