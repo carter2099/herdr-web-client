@@ -119,7 +119,7 @@ func TestSourceContainsNoStalePersonalOrLegacyIdentifiers(t *testing.T) {
 	}
 }
 
-func TestBrowserTitleIsExactlyHerdr(t *testing.T) {
+func TestBrowserTitleIsExactlyHerdrWeb(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relative := range []string{"web/index.html", "web/dist/index.html"} {
 		contents, err := os.ReadFile(filepath.Join(root, relative))
@@ -130,8 +130,8 @@ func TestBrowserTitleIsExactlyHerdr(t *testing.T) {
 		if len(matches) != 1 {
 			t.Fatalf("%s has %d title elements, want exactly one", relative, len(matches))
 		}
-		if got := string(matches[0][1]); got != "Herdr" {
-			t.Errorf("%s title = %q, want %q", relative, got, "Herdr")
+		if got := string(matches[0][1]); got != "Herdr Web" {
+			t.Errorf("%s title = %q, want %q", relative, got, "Herdr Web")
 		}
 	}
 }

@@ -68,7 +68,7 @@ function latestClientStart(state) {
 
 async function openReady(page, fixture) {
   await page.goto(`${fixture.origin}/`, { waitUntil: 'domcontentloaded' });
-  await expect(page).toHaveTitle('Herdr');
+  await expect(page).toHaveTitle('Herdr Web');
   await expect(page.locator('#app')).toHaveAttribute(
     'data-connection',
     'ready',

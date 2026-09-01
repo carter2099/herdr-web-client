@@ -9,4 +9,4 @@ if (( $# != 0 )); then
 fi
 
 cd -- "$ROOT"
-go test . -count=1 -run '^(TestSourceContainsNoStalePersonalOrLegacyIdentifiers|TestBrowserTitleIsExactlyHerdr)$'
+go test . -count=1 -run '^(TestSourceContainsNoStalePersonalOrLegacyIdentifiers|TestBrowserTitleIsExactlyHerdrWeb)$'

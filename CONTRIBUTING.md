@@ -1,6 +1,6 @@
-# Contributing to Herdr
+# Contributing to Herdr Web
 
-Thank you for improving the `herdr-web-client` source. Contributions should keep the browser product **Herdr**, the host-only deployment model, and the security boundaries documented in [README.md](README.md) intact.
+Thank you for improving the `herdr-web-client` source. Contributions should keep the browser product **Herdr Web**, the host-only deployment model, and the security boundaries documented in [README.md](README.md) intact.
 
 ## Before you start
 
@@ -29,7 +29,7 @@ bun install --frozen-lockfile
 scripts/build
 ```
 
-Review the resulting `web/dist` diff. Do not hand-edit minified bundle files. Keep the document title exactly `Herdr`, preserve the `herdr-web-client.v1` WebSocket subprotocol, and keep the existing route and message schemas compatible unless the change explicitly updates the whole contract and its consumers.
+Review the resulting `web/dist` diff. Do not hand-edit minified bundle files. Keep the document title exactly `Herdr Web`, preserve the `herdr-web-client.v1` WebSocket subprotocol, and keep the existing route and message schemas compatible unless the change explicitly updates the whole contract and its consumers.
 
 If the generated bundle changes, include those generated files in the same pull request as the source change. Do not commit `node_modules`, local build products, credentials, or private test artifacts.
 

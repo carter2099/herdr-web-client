@@ -1,6 +1,6 @@
 # Security policy
 
-Herdr is a self-hosted terminal attachment. A deployment combines this executable with an identity provider, an OIDC-aware reverse proxy, a Linux host, a user-level systemd manager, and a same-user Herdr installation. Report vulnerabilities in the complete boundary, not only in the browser bundle.
+Herdr Web is a self-hosted terminal attachment. A deployment combines this executable with an identity provider, an OIDC-aware reverse proxy, a Linux host, a user-level systemd manager, and a same-user Herdr installation. Report vulnerabilities in the complete boundary, not only in the browser bundle.
 
 ## Supported versions
 

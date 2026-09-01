@@ -13,7 +13,7 @@ cd -- "$ROOT"
 printf '%s\n' '== whitespace =='
 git diff --check
 printf '%s\n' '== Bash syntax =='
-bash -n scripts/* deploy/release.sh
+bash -n scripts/* deploy/release.sh install.sh
 
 
 printf '%s\n' '== frozen Bun dependencies =='

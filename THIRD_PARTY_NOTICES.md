@@ -1,6 +1,6 @@
 # Third-party notices
 
-The Herdr source and original project files are covered by the root [MIT license](LICENSE). The components listed here are separate works and retain their own copyrights and license terms. Nothing in the root license relicenses these components.
+The Herdr Web source and original project files are covered by the root [MIT license](LICENSE). The components listed here are separate works and retain their own copyrights and license terms. Nothing in the root license relicenses these components.
 
 This inventory covers the direct runtime and browser dependencies in `go.mod` and `package.json` and the runtime-transitive Go modules linked into the executable. Versions are the locked versions used to produce the release. Release archives include exact upstream license and notice files for every linked module plus the Go runtime.
 
@@ -171,7 +171,7 @@ THIS SOFTWARE.
 
 ### `playwright` 1.62.1 and `playwright-core` 1.62.1 — Apache-2.0 (test-time)
 
-Playwright drives the Chromium end-to-end verification. These packages and downloaded browser binaries are test-time dependencies; they are not shipped in the Herdr release archive. The Apache-2.0 text below applies to both packages.
+Playwright drives the Chromium end-to-end verification. These packages and downloaded browser binaries are test-time dependencies; they are not shipped in the Herdr Web release archive. The Apache-2.0 text below applies to both packages.
 
 The packages contain the following identical `NOTICE`:
 

@@ -27,7 +27,7 @@ if [[ "$shellcheck_version" != *$'\nversion: 0.10.0'* ]]; then
   printf 'ShellCheck 0.10.0 is required\n' >&2
   exit 1
 fi
-shellcheck scripts/* deploy/release.sh
+shellcheck scripts/* deploy/release.sh install.sh
 
 printf '%s\n' '== pinned static analysis =='
 go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
