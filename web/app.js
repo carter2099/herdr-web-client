@@ -28,6 +28,7 @@ const FIT_DEBOUNCE_MS = 80;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 const COMPLETION_TOAST_MS = 6_000;
+const TOUCH_SCROLL_THRESHOLD_PX = 6;
 
 const textEncoder = new TextEncoder();
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -237,9 +238,7 @@ let restoreDesktopTerminalFocus = false;
 let mobileKeyboardEnabled = false;
 let mobileTerminalValue = '';
 let mobileTerminalIsComposing = false;
-let mobilePointerFocusSuppressed = false;
-let mobilePointerFocusRestoreTimer = null;
-let mobilePointerInputWasReadOnly = false;
+let terminalPointerGesture = null;
 let announcementRevision = 0;
 let completionAudioContext = null;
 let completionToastTimer = null;
@@ -425,55 +424,81 @@ function terminalHasFocus() {
     document.activeElement && terminalElement.contains(document.activeElement),
   );
 }
-function restoreMobilePointerFocus() {
-  if (!mobilePointerFocusSuppressed || !terminalTextarea) {
-    return;
-  }
-  if (mobilePointerFocusRestoreTimer !== null) {
-    window.clearTimeout(mobilePointerFocusRestoreTimer);
-    mobilePointerFocusRestoreTimer = null;
-  }
-  if (terminalHasFocus()) {
-    terminal.blur();
-  }
-  terminalTextarea.blur();
-  terminalTextarea.readOnly =
-    mobilePointerInputWasReadOnly || connectionState !== 'ready';
-  mobilePointerFocusSuppressed = false;
-  syncTypeButton();
-}
-
-function scheduleMobilePointerFocusRestore() {
-  if (!mobilePointerFocusSuppressed) {
-    return;
-  }
-  if (mobilePointerFocusRestoreTimer !== null) {
-    window.clearTimeout(mobilePointerFocusRestoreTimer);
-  }
-  mobilePointerFocusRestoreTimer = window.setTimeout(
-    restoreMobilePointerFocus,
-    0,
-  );
-}
-
-function suppressMobilePointerFocus(event) {
+function beginTerminalPointer(event) {
   if (
-    event.button !== 0 ||
     desktopPointer.matches ||
-    mobileKeyboardEnabled ||
-    mobilePointerFocusSuppressed ||
-    connectionState !== 'ready' ||
-    !terminalTextarea
+    event.pointerType !== 'touch' ||
+    !event.isPrimary
+  ) {
+    terminalPointerGesture = null;
+    return;
+  }
+  terminalPointerGesture = {
+    pointerId: event.pointerId,
+    initialX: event.clientX,
+    initialY: event.clientY,
+    lastY: event.clientY,
+    scrolling: false,
+  };
+}
+
+function moveTerminalPointer(event) {
+  if (
+    desktopPointer.matches ||
+    !terminalPointerGesture ||
+    event.pointerType !== 'touch' ||
+    event.pointerId !== terminalPointerGesture.pointerId
   ) {
     return;
   }
-  mobilePointerInputWasReadOnly = terminalTextarea.readOnly;
-  mobilePointerFocusSuppressed = true;
-  terminalTextarea.readOnly = true;
-  mobilePointerFocusRestoreTimer = window.setTimeout(
-    restoreMobilePointerFocus,
-    1_000,
-  );
+
+  if (!terminalPointerGesture.scrolling) {
+    const horizontalTravel = event.clientX - terminalPointerGesture.initialX;
+    const verticalTravel = event.clientY - terminalPointerGesture.initialY;
+    if (Math.abs(verticalTravel) < TOUCH_SCROLL_THRESHOLD_PX) {
+      return;
+    }
+    if (Math.abs(verticalTravel) <= Math.abs(horizontalTravel)) {
+      terminalPointerGesture = null;
+      return;
+    }
+    terminalPointerGesture.scrolling = true;
+  }
+
+  const deltaY = terminalPointerGesture.lastY - event.clientY;
+  terminalPointerGesture.lastY = event.clientY;
+  event.preventDefault();
+  event.stopPropagation();
+  if (deltaY === 0) {
+    return;
+  }
+
+  const screen = terminalElement.querySelector('.xterm-screen');
+  if (!(screen instanceof HTMLElement)) {
+    return;
+  }
+  // xterm 6.0's virtual viewport handles wheel input but does not forward
+  // touch gestures. Reuse its wheel path so scrollback, alternate buffers,
+  // and terminal mouse reporting retain xterm's native behavior.
+  const wheelEvent = new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    deltaY,
+    view: window,
+  });
+  // xterm's wheel normalizer checks the legacy field first. Constructed wheel
+  // events expose it as zero unless the matching value is supplied explicitly.
+  Object.defineProperty(wheelEvent, 'wheelDeltaY', { value: -deltaY });
+  screen.dispatchEvent(wheelEvent);
+}
+
+function endTerminalPointer(event) {
+  if (event.pointerId === terminalPointerGesture?.pointerId) {
+    terminalPointerGesture = null;
+  }
 }
 
 function syncMobileSwitcherMask() {
@@ -538,7 +563,6 @@ function toggleScreenReaderMode() {
 
 function closeTerminalKeyboard() {
   mobileKeyboardEnabled = false;
-  restoreMobilePointerFocus();
   if (terminalHasFocus()) {
     terminal.blur();
     if (document.activeElement instanceof HTMLElement) {
@@ -1471,20 +1495,21 @@ connectionAction.addEventListener('click', () => {
   }
   void beginConnection({ resetBackoff: true });
 });
-
-terminalElement.addEventListener('mousedown', suppressMobilePointerFocus, {
-  capture: true,
+terminalElement.addEventListener('pointerdown', beginTerminalPointer, {
+  passive: true,
 });
-document.addEventListener('mouseup', scheduleMobilePointerFocusRestore, {
-  capture: true,
+terminalElement.addEventListener('pointermove', moveTerminalPointer, {
+  passive: false,
+});
+terminalElement.addEventListener('pointerup', endTerminalPointer, {
+  passive: true,
+});
+terminalElement.addEventListener('pointercancel', endTerminalPointer, {
+  passive: true,
 });
 
 terminalElement.addEventListener('focusin', () => {
-  if (
-    !desktopPointer.matches &&
-    connectionState === 'ready' &&
-    !mobilePointerFocusSuppressed
-  ) {
+  if (!desktopPointer.matches && connectionState === 'ready') {
     mobileTerminalValue = terminalTextarea?.value || '';
     mobileTerminalIsComposing = false;
     mobileKeyboardEnabled = true;
@@ -1501,7 +1526,6 @@ terminalElement.addEventListener('focusout', () => {
 });
 
 desktopPointer.addEventListener('change', () => {
-  restoreMobilePointerFocus();
   mobileKeyboardEnabled = false;
   syncMobileSwitcherMask();
   syncTypeButton();
@@ -1538,7 +1562,6 @@ document.addEventListener('click', (event) => {
       if (desktopPointer.matches ? terminalHasFocus() : mobileKeyboardEnabled) {
         closeTerminalKeyboard();
       } else if (isTransportReady()) {
-        restoreMobilePointerFocus();
         mobileTerminalValue = terminalTextarea?.value || '';
         mobileTerminalIsComposing = false;
         mobileKeyboardEnabled = !desktopPointer.matches;

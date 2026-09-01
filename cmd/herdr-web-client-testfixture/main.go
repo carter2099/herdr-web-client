@@ -147,7 +147,8 @@ func runFakeClient() int {
 	defer signal.Stop(windowChanges)
 	crashTrigger := []byte("fixture-crash")
 	exitTrigger := []byte("fixture-exit")
-	triggerTail := make([]byte, 0, len(crashTrigger)-1)
+	scrollTrigger := []byte("fixture-scroll")
+	triggerTail := make([]byte, 0, len(scrollTrigger)-1)
 	for {
 		select {
 		case payload := <-input:
@@ -170,7 +171,12 @@ func runFakeClient() int {
 				_ = recorder.write(clientEvent{Kind: "exit", PID: os.Getpid(), ExitCode: &code})
 				return code
 			}
-			tailLength := len(crashTrigger) - 1
+			if bytes.Contains(triggerWindow, scrollTrigger) {
+				for line := range 120 {
+					_, _ = fmt.Fprintf(os.Stdout, "FIXTURE_SCROLL_LINE:%03d\r\n", line)
+				}
+			}
+			tailLength := len(scrollTrigger) - 1
 			if len(triggerWindow) < tailLength {
 				tailLength = len(triggerWindow)
 			}

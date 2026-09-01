@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Herdr Terminal Mono";
+  src: url("./fonts/CaskaydiaMonoNerdFontMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
 :root {
   color-scheme: dark;
 
@@ -29,8 +37,8 @@
     "Azeret Mono", "SFMono-Regular", "Cascadia Code", "Liberation Mono",
     monospace;
   --font-terminal:
-    "CaskaydiaMono Nerd Font Mono", "Iosevka Term", "SFMono-Regular",
-    "Cascadia Mono", "Liberation Mono", monospace;
+    "Herdr Terminal Mono", "CaskaydiaMono Nerd Font Mono", "Iosevka Term",
+    "SFMono-Regular", "Cascadia Mono", "Liberation Mono", monospace;
   --font-size-xs: 0.6875rem;
   --font-size-sm: 0.75rem;
   --font-size-md: 0.8125rem;
@@ -294,6 +302,7 @@ button:disabled {
 .terminal-host > .xterm {
   width: 100%;
   height: 100%;
+  touch-action: none;
   padding-top: var(--space-1);
   padding-right: max(var(--space-2), env(safe-area-inset-right));
   padding-bottom: var(--space-1);

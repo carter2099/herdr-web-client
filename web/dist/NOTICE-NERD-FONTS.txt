@@ -1,0 +1,27 @@
+Cascadia Mono Nerd Font v3.5.1
+
+Source: https://github.com/ryanoasis/nerd-fonts/releases/tag/v3.5.1
+Release archive: CascadiaMono.tar.xz
+Archive SHA-256: e4fe0248bbe2558e907d26b55ed287403972f946239a4ea3f7a8afd3365ad6ba
+Bundled file: CaskaydiaMonoNerdFontMono-Regular.ttf
+Bundled file SHA-256: 0bc1e80eb7d1c0a1debb433a21da6e686b15556e1d54fcfe47f87f7379276830
+
+The release combines the Cascadia Mono base font with the Nerd Fonts symbol sets.
+The release README attributes the included icon sets as follows:
+
+- Codicons 0.0.45 — CC BY 4.0
+- Devicons 2.17.0 — MIT
+- extraglyphs — MIT
+- Font Awesome 6.5.1 — CC BY 4.0
+- Font Awesome Extension 0.0.3 — MIT
+- Font Logos 1.3.0 — unlicensed
+- MaterialDesign (2022-10-06) — Apache 2.0
+- Octicons 18.3.0 — MIT
+- Seti and original 0.8.1 — MIT
+- Pomicons 1.001 — OFL 1.1 with Reserved Font Name
+- Powerline Extra 1.200 — MIT
+- Powerline Symbols 1.000 — MIT
+- Power Symbols IEC (2015-02) — MIT
+- Weather Icons 2.0.10 — OFL 1.1
+
+The Cascadia Mono license shipped in the official release archive is included as LICENSE-CASCADIA-MONO.txt. The Nerd Fonts project license is included as LICENSE-NERD-FONTS.txt. Full project licensing and source attribution remain available at https://github.com/ryanoasis/nerd-fonts/.

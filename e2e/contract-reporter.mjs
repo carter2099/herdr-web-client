@@ -5,7 +5,8 @@ const expectedByProject = {
     '@desktop closing the attachment cancels and reaps only its target child',
   ],
   'chromium-mobile': [
-    '@mobile Type uses the native textarea and controls never refocus the terminal',
+    '@mobile terminal taps and Type use native input without control refocus',
+    '@mobile touch gestures scroll terminal history',
   ],
 };
 

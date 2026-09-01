@@ -58,6 +58,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+### Cascadia Mono Nerd Font 3.5.1 — OFL-1.1, MIT, and icon-set terms
+
+The embedded terminal bundles the unchanged `CaskaydiaMonoNerdFontMono-Regular.ttf` from the official Nerd Fonts 3.5.1 `CascadiaMono.tar.xz` release. Its SHA-256 is `0bc1e80eb7d1c0a1debb433a21da6e686b15556e1d54fcfe47f87f7379276830`.
+
+The Cascadia Mono base font remains under the SIL Open Font License 1.1, including Microsoft's Reserved Font Name. The Nerd Fonts project additions remain under the MIT license. The incorporated symbol sets retain the individual terms and attributions listed in the exact upstream notice. Source copies are tracked as [`LICENSE-CASCADIA-MONO.txt`](web/fonts/LICENSE-CASCADIA-MONO.txt), [`LICENSE-NERD-FONTS.txt`](web/fonts/LICENSE-NERD-FONTS.txt), and [`NOTICE-NERD-FONTS.txt`](web/fonts/NOTICE-NERD-FONTS.txt); release archives reproduce all three under `LICENSES/`, and the browser bundle serves the same files beside its assets.
+
 ### `esbuild` 0.28.2 — MIT (build-time)
 
 `esbuild` is used to produce the browser bundle and is not a runtime service dependency. Its license is included because it is a direct build dependency.

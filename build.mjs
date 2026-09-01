@@ -38,6 +38,8 @@ await build({
   minify: true,
   sourcemap: false,
   legalComments: 'eof',
+  loader: { '.ttf': 'file' },
+  assetNames: 'assets/[name]-[hash]',
   banner: {
     js: browserLicenseBanner,
     css: browserLicenseBanner,
@@ -51,4 +53,16 @@ await Promise.all([
   copyFile(path.join(web, 'index.html'), path.join(dist, 'index.html')),
   copyFile(path.join(web, 'favicon.png'), path.join(dist, 'favicon.png')),
   copyFile(path.join(web, 'favicon.ico'), path.join(dist, 'favicon.ico')),
+  copyFile(
+    path.join(web, 'fonts', 'LICENSE-CASCADIA-MONO.txt'),
+    path.join(dist, 'LICENSE-CASCADIA-MONO.txt'),
+  ),
+  copyFile(
+    path.join(web, 'fonts', 'LICENSE-NERD-FONTS.txt'),
+    path.join(dist, 'LICENSE-NERD-FONTS.txt'),
+  ),
+  copyFile(
+    path.join(web, 'fonts', 'NOTICE-NERD-FONTS.txt'),
+    path.join(dist, 'NOTICE-NERD-FONTS.txt'),
+  ),
 ]);

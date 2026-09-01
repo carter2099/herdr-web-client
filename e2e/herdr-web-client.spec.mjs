@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -91,6 +92,54 @@ async function openReady(page, fixture) {
   );
 }
 
+async function terminalPoint(page, verticalFraction) {
+  const screen = page.locator('#terminal .xterm-screen');
+  const box = await screen.boundingBox();
+  expect(box, 'xterm screen must have a mobile hit area').not.toBeNull();
+  return {
+    x: box.x + box.width / 2,
+    y: box.y + box.height * verticalFraction,
+  };
+}
+
+async function tapTerminal(page) {
+  const point = await terminalPoint(page, 0.5);
+  await page.touchscreen.tap(point.x, point.y);
+}
+
+async function swipeTerminal(page, startFraction, endFraction) {
+  const start = await terminalPoint(page, startFraction);
+  const end = await terminalPoint(page, endFraction);
+  const session = await page.context().newCDPSession(page);
+  try {
+    await session.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ ...start, id: 1, force: 1 }],
+    });
+    const steps = 8;
+    for (let step = 1; step <= steps; step += 1) {
+      const progress = step / steps;
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+          {
+            x: start.x + (end.x - start.x) * progress,
+            y: start.y + (end.y - start.y) * progress,
+            id: 1,
+            force: 1,
+          },
+        ],
+      });
+    }
+    await session.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [],
+    });
+  } finally {
+    await session.detach();
+  }
+}
+
 async function assertEmbeddedAssets(page) {
   const files = await distFiles(distRoot);
   expect(files.length).toBeGreaterThan(0);
@@ -131,6 +180,45 @@ async function assertEmbeddedAssets(page) {
       (await readFile(source.fullPath)).toString('base64'),
     );
   }
+
+  const fontAssets = files.filter(({ relative }) =>
+    /^assets\/CaskaydiaMonoNerdFontMono-Regular-[A-Z0-9]+\.ttf$/.test(relative),
+  );
+  expect(fontAssets).toHaveLength(1);
+  const fontBytes = await readFile(fontAssets[0].fullPath);
+  expect(createHash('sha256').update(fontBytes).digest('hex')).toBe(
+    '0bc1e80eb7d1c0a1debb433a21da6e686b15556e1d54fcfe47f87f7379276830',
+  );
+  const fontState = await page.evaluate(async () => {
+    const glyphs = '0\ue0b0\uf14a\udb84\udeb7';
+    const loadedFaces = await document.fonts.load(
+      '14px "Herdr Terminal Mono"',
+      glyphs,
+    );
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    context.font = '14px "Herdr Terminal Mono"';
+    return {
+      configuredFamily: getComputedStyle(
+        document.documentElement,
+      ).getPropertyValue('--font-terminal'),
+      faceLoaded: loadedFaces.some(
+        (face) =>
+          face.family.replace(/^["']|["']$/g, '') === 'Herdr Terminal Mono' &&
+          face.status === 'loaded',
+      ),
+      glyphsLoaded: document.fonts.check('14px "Herdr Terminal Mono"', glyphs),
+      widths: [...glyphs].map((glyph) => context.measureText(glyph).width),
+    };
+  });
+  expect(fontState.configuredFamily.trim()).toMatch(/^"Herdr Terminal Mono",/);
+  expect(fontState.faceLoaded).toBe(true);
+  expect(fontState.glyphsLoaded).toBe(true);
+  expect(
+    fontState.widths.every(
+      (width) => Math.abs(width - fontState.widths[0]) < 0.01,
+    ),
+  ).toBe(true);
 }
 
 async function securityHeaders(page, origin) {
@@ -303,7 +391,7 @@ e2e(
 );
 
 e2e(
-  '@mobile Type uses the native textarea and controls never refocus the terminal',
+  '@mobile terminal taps and Type use native input without control refocus',
   async ({ page, herdr }) => {
     await openReady(page, herdr);
     const textarea = page.locator('#terminal textarea');
@@ -313,7 +401,7 @@ e2e(
     await expect(textarea).toHaveAttribute('autocapitalize', 'sentences');
     await expect(textarea).toHaveAttribute('autocorrect', 'on');
 
-    await page.locator('#type-button').click();
+    await tapTerminal(page);
     await expect(page.locator('#type-button')).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -329,6 +417,22 @@ e2e(
     const keyInput = 'fixture-mobile-key-input';
     const imeInput = 'fixture-mobile-ime-input';
     await page.keyboard.type(keyInput);
+    await page.locator('#type-button').click();
+    await expect(page.locator('#type-button')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+    await expect
+      .poll(() =>
+        textarea.evaluate((element) => document.activeElement !== element),
+      )
+      .toBe(true);
+    await page.locator('#type-button').click();
+    await expect
+      .poll(() =>
+        textarea.evaluate((element) => document.activeElement === element),
+      )
+      .toBe(true);
     await page.keyboard.insertText(imeInput);
     await waitForState(
       herdr,
@@ -384,6 +488,33 @@ e2e(
       (state) => decodedInputs(state).join('').includes('\u0000w'),
       'Herdr menu selection must send its NUL-prefixed shortcut without keyboard refocus',
     );
+  },
+);
+
+e2e(
+  '@mobile touch gestures scroll terminal history',
+  async ({ page, herdr }) => {
+    await openReady(page, herdr);
+    await tapTerminal(page);
+    const trigger = 'fixture-scroll';
+    await page.keyboard.insertText(trigger);
+    await waitForState(
+      herdr,
+      (state) => decodedInputs(state).join('').includes(trigger),
+      'scroll fixture trigger must reach the terminal',
+    );
+
+    const rows = page.locator('#terminal .xterm-rows');
+    await expect(rows).toContainText('FIXTURE_SCROLL_LINE:119');
+    const bottomRows = await rows.textContent();
+    await swipeTerminal(page, 0.25, 0.85);
+    await expect.poll(() => rows.textContent()).not.toBe(bottomRows);
+    await expect(rows).toContainText('FIXTURE_SCROLL_LINE:');
+    await expect(rows).not.toContainText('FIXTURE_SCROLL_LINE:119');
+
+    await swipeTerminal(page, 0.85, 0.25);
+    await swipeTerminal(page, 0.85, 0.25);
+    await expect(rows).toContainText('FIXTURE_SCROLL_LINE:119');
   },
 );
 

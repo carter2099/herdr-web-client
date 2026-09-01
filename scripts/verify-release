@@ -168,6 +168,15 @@ for arch in amd64 arm64; do
   test -f "$extract/$root/THIRD_PARTY_NOTICES.md"
   license_dir=$extract/$root/LICENSES
   test -d "$license_dir"
+  for font_notice in \
+    LICENSE-CASCADIA-MONO.txt \
+    LICENSE-NERD-FONTS.txt \
+    NOTICE-NERD-FONTS.txt; do
+    if ! cmp -s -- "$ROOT/web/fonts/$font_notice" "$license_dir/$font_notice"; then
+      printf 'archive lacks exact bundled-font notice %s\n' "$font_notice" >&2
+      exit 1
+    fi
+  done
   for module_prefix in \
     github.com__coreos__go-oidc__v3 \
     github.com__creack__pty \

@@ -82,6 +82,9 @@ required_files=(
   THIRD_PARTY_NOTICES.md
   .env.example
   deploy/herdr-web-client.service
+  web/fonts/LICENSE-CASCADIA-MONO.txt
+  web/fonts/LICENSE-NERD-FONTS.txt
+  web/fonts/NOTICE-NERD-FONTS.txt
 )
 for relative in "${required_files[@]}"; do
   source_file="$ROOT_DIR/$relative"
@@ -164,6 +167,13 @@ copy_release_files() {
   local source_file
   for source_file in "${runtime_license_files[@]}"; do
     install -m 0644 -- "$source_file" "$stage/LICENSES/$(basename -- "$source_file")"
+  done
+  local font_notice
+  for font_notice in \
+    LICENSE-CASCADIA-MONO.txt \
+    LICENSE-NERD-FONTS.txt \
+    NOTICE-NERD-FONTS.txt; do
+    install -m 0644 -- "$ROOT_DIR/web/fonts/$font_notice" "$stage/LICENSES/$font_notice"
   done
 }
 
