@@ -338,6 +338,19 @@ function showAgentCompletion(message) {
   playCompletionPing(completionAudioContext);
 }
 
+async function writeClipboardText(text) {
+  if (typeof navigator.clipboard?.writeText !== 'function') {
+    announce('Automatic clipboard copy is not available in this browser.');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    announce('Copied to clipboard.');
+  } catch {
+    announce('The browser blocked automatic clipboard access.');
+  }
+}
+
 function stateView(state, context = {}) {
   switch (state) {
     case 'connecting':

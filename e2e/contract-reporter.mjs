@@ -1,6 +1,6 @@
 const expectedByProject = {
   'chromium-desktop': [
-    '@desktop serves the exact embedded production bundle and bridges PTY/completion state',
+    '@desktop serves the exact embedded production bundle and bridges PTY/clipboard/completion state',
     '@desktop @mobile @takeover an explicit detach takes over safely and leaves the displaced page detached',
     '@desktop @mobile @takeover an expired displayed token leaves a usable takeover action',
     '@desktop a crashed Herdr client reports its exit and can start a fresh attachment',

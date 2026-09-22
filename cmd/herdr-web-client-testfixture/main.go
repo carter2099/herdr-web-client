@@ -137,6 +137,8 @@ func runFakeClient() int {
 	defer signal.Stop(windowChanges)
 	crashTrigger := []byte("fixture-crash")
 	exitTrigger := []byte("fixture-exit")
+	clipboardTrigger := []byte("fixture-copy")
+	clipboardText := []byte("fixture clipboard text")
 	scrollTrigger := []byte("fixture-scroll")
 	triggerTail := make([]byte, 0, len(scrollTrigger)-1)
 	for {
@@ -165,6 +167,10 @@ func runFakeClient() int {
 				for line := range 120 {
 					_, _ = fmt.Fprintf(os.Stdout, "FIXTURE_SCROLL_LINE:%03d\r\n", line)
 				}
+			}
+			if bytes.Contains(triggerWindow, clipboardTrigger) {
+				encodedClipboard := base64.StdEncoding.EncodeToString(clipboardText)
+				_, _ = fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\a", encodedClipboard)
 			}
 			tailLength := len(scrollTrigger) - 1
 			if len(triggerWindow) < tailLength {

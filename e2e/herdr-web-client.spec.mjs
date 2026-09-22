@@ -310,7 +310,7 @@ async function assertDirectClientInvocation(fixture, state) {
 }
 
 e2e(
-  '@desktop serves the exact embedded production bundle and bridges PTY/completion state',
+  '@desktop serves the exact embedded production bundle and bridges PTY/clipboard/completion state',
   async ({ page, herdr }) => {
     await openReady(page, herdr);
     await securityHeaders(page, herdr.origin);
@@ -333,6 +333,29 @@ e2e(
     );
     await expect(page.locator('#terminal .xterm-rows')).toContainText(
       'FIXTURE_PTY_INPUT',
+    );
+
+    await page
+      .context()
+      .grantPermissions(['clipboard-read', 'clipboard-write'], {
+        origin: herdr.origin,
+      });
+    await page.evaluate(() =>
+      navigator.clipboard.writeText('clipboard sentinel'),
+    );
+    await page.locator('#terminal textarea').focus();
+    await page.keyboard.insertText('fixture-copy');
+    await expect
+      .poll(() => page.evaluate(() => navigator.clipboard.readText()), {
+        message: 'OSC 52 output must reach the browser clipboard',
+      })
+      .toBe('fixture clipboard text');
+    await page.keyboard.insertText('fixture-after-copy');
+    await waitForState(
+      herdr,
+      (current) =>
+        decodedInputs(current).join('').includes('fixture-after-copy'),
+      'terminal input must remain responsive after a clipboard write',
     );
 
     state = await herdr.state();
