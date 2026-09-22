@@ -777,11 +777,21 @@ func (f *fixture) handleRPC(connection net.Conn) {
 		}
 		var params struct {
 			Subscriptions []struct {
-				Type string `json:"type"`
+				Type   string `json:"type"`
+				PaneID string `json:"pane_id"`
 			} `json:"subscriptions"`
 		}
-		if json.Unmarshal(request.Params, &params) != nil || len(params.Subscriptions) != 1 || params.Subscriptions[0].Type != "pane.updated" {
-			_ = encoder.Encode(map[string]any{"id": request.ID, "error": map[string]string{"code": "invalid_request", "message": "fixture requires pane.updated subscription"}})
+		if err := json.Unmarshal(request.Params, &params); err != nil {
+			return
+		}
+		statusSubscribed := false
+		for _, subscription := range params.Subscriptions {
+			if subscription.Type == "pane.agent_status_changed" && subscription.PaneID == "fixture-pane" {
+				statusSubscribed = true
+			}
+		}
+		if !statusSubscribed {
+			_ = encoder.Encode(map[string]any{"id": request.ID, "error": map[string]string{"code": "invalid_request", "message": "fixture requires semantic status subscription"}})
 			return
 		}
 		f.state.mu.Lock()
@@ -806,17 +816,13 @@ func (f *fixture) handleRPC(connection net.Conn) {
 			f.state.completionEvents++
 			f.state.mu.Unlock()
 			_ = encoder.Encode(map[string]any{
-				"event": "pane_updated",
-				"data": map[string]any{
-					"type": "pane_updated",
-					"pane": map[string]string{
-						"pane_id":                 "fixture-pane",
-						"workspace_id":            "fixture-workspace",
-						"agent":                   "fixture-agent",
-						"agent_status":            "done",
-						"terminal_title":          "Fixture terminal",
-						"terminal_title_stripped": "Fixture completed",
-					},
+				"event": "pane.agent_status_changed",
+				"data": map[string]string{
+					"pane_id":      "fixture-pane",
+					"workspace_id": "fixture-workspace",
+					"agent":        "fixture-agent",
+					"agent_status": "done",
+					"title":        "Fixture completed",
 				},
 			})
 		case <-f.ctx.Done():

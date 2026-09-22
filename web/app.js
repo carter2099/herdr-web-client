@@ -16,8 +16,10 @@ import './styles.css';
 
 const ATTACH_PROTOCOL = 'herdr-web-client.v1';
 const SESSION_PATH = '/api/session';
+const DETACH_PATH = '/api/detach';
 const ATTACH_PATH = '/api/attach';
 const ACTIVE_ATTACHMENT_MESSAGE = 'another attachment is already active';
+const DETACHED_CLOSE_REASON = 'attachment detached';
 const MIN_COLS = 20;
 const MAX_COLS = 400;
 const MIN_ROWS = 5;
@@ -68,6 +70,7 @@ const connectionTitle = elementById('connection-title');
 const connectionDetail = elementById('connection-detail');
 const connectionSpinner = elementById('connection-spinner');
 const connectionAction = elementById('connection-action');
+const detachAction = elementById('detach-action');
 const typeButton = elementById('type-button');
 const mobileSwitchMask = elementById('mobile-switch-mask');
 const keysSheet = elementById('keys-sheet');
@@ -215,11 +218,11 @@ const TERMINAL_KEY_NAMES = new Map([
   ['ctrl-z', 'Control Z'],
   ['ctrl-l', 'Control L'],
 ]);
-
 let connectionState = 'connecting';
 let socket = null;
 let connectionGeneration = 0;
 let sessionController = null;
+let detachController = null;
 let handshakeTimer = null;
 let reconnectTimer = null;
 let reconnectCountdownTimer = null;
@@ -227,6 +230,10 @@ let reconnectAttempt = 0;
 let fitTimer = null;
 let viewportFrame = null;
 let pageSuspended = false;
+let manuallyDetached = false;
+let detachPending = false;
+let detachCredential = null;
+let detachExpiryTimer = null;
 let lastSentDimensions = null;
 let pastePending = false;
 let activeSheet = null;
@@ -331,24 +338,42 @@ function showAgentCompletion(message) {
   }, COMPLETION_TOAST_MS);
   playCompletionPing(completionAudioContext);
 }
+function isUsableDetachCredential(credential) {
+  return Boolean(
+    credential &&
+      typeof credential.nonce === 'string' &&
+      credential.nonce.length > 0 &&
+      typeof credential.expiresAt === 'string' &&
+      Number.isFinite(credential.expiresAtMs) &&
+      credential.expiresAtMs > Date.now(),
+  );
+}
 
-document.addEventListener('pointerdown', unlockCompletionAudio, {
-  capture: true,
-  passive: true,
-});
-document.addEventListener('keydown', unlockCompletionAudio, { capture: true });
+function clearDetachCredential() {
+  if (detachExpiryTimer !== null) {
+    window.clearTimeout(detachExpiryTimer);
+    detachExpiryTimer = null;
+  }
+  detachCredential = null;
+}
 
-async function writeClipboardText(text) {
-  if (!navigator.clipboard?.writeText) {
-    announce('Automatic clipboard copy is not available in this browser.');
+function rememberDetachCredential(credential) {
+  clearDetachCredential();
+  if (!isUsableDetachCredential(credential)) {
     return;
   }
-  try {
-    await navigator.clipboard.writeText(text);
-    announce('Copied to clipboard.');
-  } catch {
-    announce('The browser blocked automatic clipboard access.');
-  }
+  detachCredential = credential;
+  const delay = Math.max(0, credential.expiresAtMs - Date.now());
+  detachExpiryTimer = window.setTimeout(() => {
+    if (detachCredential !== credential) {
+      return;
+    }
+    clearDetachCredential();
+    if (connectionState === 'limited') {
+      setConnectionState('limited');
+      announce('The detach option expired. Try again to refresh it.');
+    }
+  }, delay);
 }
 
 function stateView(state, context = {}) {
@@ -376,13 +401,25 @@ function stateView(state, context = {}) {
         title: '',
         detail: '',
       };
-    case 'limited':
+    case 'limited': {
+      const canDetach = isUsableDetachCredential(context.detachCredential);
       return {
         status: 'Attachment busy',
         title: 'Herdr is already attached',
-        detail:
-          'Only one browser attachment can be active. Close the other attachment, then try again.',
+        detail: canDetach
+          ? 'Only one browser attachment can be active. Detaching it disconnects only the other browser; terminal processes keep running.'
+          : 'Only one browser attachment can be active. Close the other attachment, then try again.',
         action: 'Try again',
+        detachAction: canDetach ? 'Detach other client and connect' : '',
+      };
+    }
+    case 'detached':
+      return {
+        status: 'Detached',
+        title: 'This browser was detached',
+        detail:
+          'The other browser disconnected this attachment. Terminal processes keep running. Reconnect manually when you are ready.',
+        action: 'Reconnect',
       };
     case 'offline':
       return {
@@ -586,6 +623,15 @@ function syncConnectionControls() {
     pasteButton.textContent = pastePending ? 'Reading…' : 'Paste';
   }
 
+  connectionAction.disabled = detachPending;
+  const detachAvailable = isUsableDetachCredential(detachCredential);
+  detachAction.hidden = !detachAvailable || !detachAction.dataset.label;
+  detachAction.disabled = detachPending || !detachAvailable;
+  detachAction.setAttribute('aria-busy', String(detachPending));
+  detachAction.textContent = detachPending
+    ? 'Detaching…'
+    : detachAction.dataset.label || '';
+
   if (!ready) {
     closeTerminalKeyboard();
     if (activeSheet === keysSheet || activeSheet === herdrSheet) {
@@ -599,7 +645,15 @@ function syncConnectionControls() {
 function setConnectionState(state, context = {}) {
   const previousState = connectionState;
   connectionState = state;
-  const view = stateView(state, context);
+  if (state === 'limited') {
+    rememberDetachCredential(context.detachCredential);
+  } else {
+    clearDetachCredential();
+  }
+  const view = stateView(state, {
+    ...context,
+    detachCredential,
+  });
 
   app.dataset.connection = state;
   statusLabel.textContent = view.status;
@@ -609,6 +663,11 @@ function setConnectionState(state, context = {}) {
   connectionDetail.textContent = view.detail;
   connectionAction.hidden = !view.action;
   connectionAction.textContent = view.action || '';
+  detachAction.hidden = !view.detachAction;
+  detachAction.dataset.label = view.detachAction || '';
+  detachAction.textContent = detachPending
+    ? 'Detaching…'
+    : view.detachAction || '';
   terminal.options.disableStdin = state !== 'ready';
 
   syncConnectionControls();
@@ -742,6 +801,8 @@ function stopCurrentTransport(reason) {
   connectionGeneration += 1;
   sessionController?.abort();
   sessionController = null;
+  detachController?.abort();
+  detachController = null;
   clearHandshakeTimer();
 
   const currentSocket = socket;
@@ -756,6 +817,10 @@ function stopCurrentTransport(reason) {
 }
 
 function scheduleReconnect() {
+  if (manuallyDetached) {
+    clearReconnectTimers();
+    return;
+  }
   if (connectionState === 'ready' && terminalHasFocus()) {
     restoreDesktopTerminalFocus = true;
   }
@@ -991,7 +1056,35 @@ if ('ResizeObserver' in window) {
   terminalResizeObserver.observe(terminalStage);
 }
 
-class AttachmentLimitError extends Error {}
+class AttachmentLimitError extends Error {
+  constructor(message, detachCredential = null) {
+    super(message);
+    this.name = 'AttachmentLimitError';
+    this.detachCredential = detachCredential;
+  }
+}
+
+function parseDetachCredential(payload) {
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    Array.isArray(payload) ||
+    typeof payload.detach_nonce !== 'string' ||
+    payload.detach_nonce.trim().length === 0 ||
+    typeof payload.expires_at !== 'string'
+  ) {
+    return null;
+  }
+  const expiresAtMs = Date.parse(payload.expires_at);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    return null;
+  }
+  return {
+    nonce: payload.detach_nonce,
+    expiresAt: payload.expires_at,
+    expiresAtMs,
+  };
+}
 
 async function requestSession(signal) {
   let response;
@@ -1021,16 +1114,26 @@ async function requestSession(signal) {
   ) {
     throw new Error('The session request was redirected.');
   }
-  if (response.status === 409) {
-    throw new AttachmentLimitError(ACTIVE_ATTACHMENT_MESSAGE);
-  }
-  if (!response.ok) {
-    throw new Error(`The session request returned ${response.status}.`);
-  }
 
   const responseOrigin = new URL(response.url, window.location.href).origin;
   if (response.redirected && responseOrigin !== window.location.origin) {
     throw new Error('The session request was redirected.');
+  }
+
+  if (response.status === 409) {
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // A conflict without a valid body remains a safe, non-destructive retry.
+    }
+    throw new AttachmentLimitError(
+      ACTIVE_ATTACHMENT_MESSAGE,
+      parseDetachCredential(payload),
+    );
+  }
+  if (!response.ok) {
+    throw new Error(`The session request returned ${response.status}.`);
   }
 
   let payload;
@@ -1055,6 +1158,66 @@ async function requestSession(signal) {
   return { nonce: payload.nonce };
 }
 
+class StaleDetachCredentialError extends Error {
+  constructor(status) {
+    super(`The detach request returned ${status}.`);
+    this.name = 'StaleDetachCredentialError';
+    this.status = status;
+  }
+}
+
+class DetachUnavailableError extends Error {
+  constructor() {
+    super('The other attachment could not be detached.');
+    this.name = 'DetachUnavailableError';
+  }
+}
+
+async function detachOtherClientRequest(credential, signal) {
+  let response;
+  try {
+    response = await fetch(DETACH_PATH, {
+      method: 'POST',
+      mode: 'same-origin',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'manual',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Herdr-Web-Client-Request': 'session',
+      },
+      body: JSON.stringify({ nonce: credential.nonce }),
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error;
+    }
+    throw new Error('The detach request failed.');
+  }
+
+  if (
+    response.type === 'opaqueredirect' ||
+    (response.status >= 300 && response.status < 400)
+  ) {
+    throw new Error('The detach request was redirected.');
+  }
+  const responseOrigin = new URL(response.url, window.location.href).origin;
+  if (response.redirected && responseOrigin !== window.location.origin) {
+    throw new Error('The detach request was redirected.');
+  }
+  if (response.status === 403 || response.status === 409) {
+    throw new StaleDetachCredentialError(response.status);
+  }
+  if (response.status === 503) {
+    throw new DetachUnavailableError();
+  }
+  if (response.status !== 204) {
+    throw new Error(`The detach request returned ${response.status}.`);
+  }
+}
+
 function attachURL() {
   const url = new URL(ATTACH_PATH, window.location.href);
   if (url.protocol === 'https:') {
@@ -1074,6 +1237,21 @@ function protocolFailure(context, websocket, detail) {
     websocket.close(1002, 'invalid server message');
   } catch {
     // The final protocol-error state is already visible.
+  }
+}
+
+function markDetached(context, websocket) {
+  context.finalState = { state: 'detached' };
+  manuallyDetached = true;
+  clearReconnectTimers();
+  clearHandshakeTimer();
+  setConnectionState('detached');
+  if (websocket.readyState < WebSocket.CLOSING) {
+    try {
+      websocket.close(1000, DETACHED_CLOSE_REASON);
+    } catch {
+      // The detached state is already visible.
+    }
   }
 }
 
@@ -1169,6 +1347,17 @@ function handleServerControl(context, websocket, data) {
       }
       context.finalState = { state: 'ended', code: message.code };
       setConnectionState('ended', { code: message.code });
+      break;
+    case 'detached':
+      if (!context.ready) {
+        protocolFailure(
+          context,
+          websocket,
+          'The server sent detached before the attachment was ready.',
+        );
+        return;
+      }
+      markDetached(context, websocket);
       break;
     case 'error': {
       if (
@@ -1322,12 +1511,20 @@ function openAttachment(session, generation, automatic) {
       void event.data
         .arrayBuffer()
         .then((buffer) => {
-          if (socket === websocket && generation === connectionGeneration) {
+          if (
+            socket === websocket &&
+            generation === connectionGeneration &&
+            !context.finalState
+          ) {
             writeServerOutput(context, websocket, buffer);
           }
         })
         .catch(() => {
-          if (socket === websocket && generation === connectionGeneration) {
+          if (
+            socket === websocket &&
+            generation === connectionGeneration &&
+            !context.finalState
+          ) {
             protocolFailure(
               context,
               websocket,
@@ -1344,7 +1541,7 @@ function openAttachment(session, generation, automatic) {
     );
   });
 
-  websocket.addEventListener('close', () => {
+  websocket.addEventListener('close', (event) => {
     if (generation !== connectionGeneration) {
       return;
     }
@@ -1353,11 +1550,20 @@ function openAttachment(session, generation, automatic) {
     }
     clearHandshakeTimer();
 
+    if (
+      event.reason === DETACHED_CLOSE_REASON &&
+      context.finalState?.state !== 'detached'
+    ) {
+      markDetached(context, websocket);
+    }
     if (pageSuspended) {
       return;
     }
     if (context.finalState) {
       setConnectionState(context.finalState.state, context.finalState);
+      return;
+    }
+    if (manuallyDetached) {
       return;
     }
     scheduleReconnect();
@@ -1372,6 +1578,16 @@ async function beginConnection({
   automatic = false,
   resetBackoff = false,
 } = {}) {
+  if (automatic && manuallyDetached) {
+    return;
+  }
+  if (automatic && detachPending) {
+    return;
+  }
+  if (!automatic) {
+    manuallyDetached = false;
+  }
+  clearDetachCredential();
   clearReconnectTimers();
   if (resetBackoff) {
     reconnectAttempt = 0;
@@ -1409,7 +1625,9 @@ async function beginConnection({
     }
     sessionController = null;
     if (error instanceof AttachmentLimitError && !automatic) {
-      setConnectionState('limited');
+      setConnectionState('limited', {
+        detachCredential: error.detachCredential,
+      });
     } else if (automatic) {
       scheduleReconnect();
     } else {
@@ -1454,8 +1672,54 @@ async function pasteFromClipboard() {
   }
 }
 
+async function detachAndConnect() {
+  if (detachPending) {
+    return;
+  }
+
+  const credential = detachCredential;
+  if (!isUsableDetachCredential(credential)) {
+    clearDetachCredential();
+    await beginConnection({ resetBackoff: true });
+    return;
+  }
+
+  detachPending = true;
+  syncConnectionControls();
+  const controller = new AbortController();
+  detachController = controller;
+  try {
+    await detachOtherClientRequest(credential, controller.signal);
+    if (controller.signal.aborted) {
+      return;
+    }
+    clearDetachCredential();
+    detachController = null;
+    await beginConnection({ resetBackoff: true });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
+    clearDetachCredential();
+    if (error instanceof StaleDetachCredentialError) {
+      await beginConnection({ resetBackoff: true });
+      return;
+    }
+    setConnectionState('error', { detail: conciseMessage(error?.message) });
+  } finally {
+    if (detachController === controller) {
+      detachController = null;
+    }
+    detachPending = false;
+    syncConnectionControls();
+  }
+}
+
 connectionAction.addEventListener('click', () => {
   void beginConnection({ resetBackoff: true });
+});
+detachAction.addEventListener('click', () => {
+  void detachAndConnect();
 });
 terminalElement.addEventListener('pointerdown', beginTerminalPointer, {
   passive: true,
@@ -1589,11 +1853,13 @@ document.addEventListener('click', (event) => {
 window.addEventListener('offline', () => {
   clearReconnectTimers();
   stopCurrentTransport('browser offline');
-  setConnectionState('offline');
+  if (!manuallyDetached) {
+    setConnectionState('offline');
+  }
 });
 
 window.addEventListener('online', () => {
-  if (!pageSuspended && connectionState !== 'ready') {
+  if (!manuallyDetached && !pageSuspended && connectionState !== 'ready') {
     void beginConnection({ automatic: true, resetBackoff: true });
   }
 });
@@ -1613,7 +1879,9 @@ window.addEventListener('pageshow', (event) => {
     pageSuspended = false;
     syncVisualViewport();
     scheduleFit(true);
-    void beginConnection({ automatic: true, resetBackoff: true });
+    if (!manuallyDetached) {
+      void beginConnection({ automatic: true, resetBackoff: true });
+    }
   }
 });
 

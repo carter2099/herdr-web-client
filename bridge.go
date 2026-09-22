@@ -557,7 +557,9 @@ func waitForTransientUnit(ctx context.Context, unitName string, controlEnv []str
 			switch {
 			case loadState == "loaded" && activeState == "active":
 				return nil
-			case loadState == "loaded" && activeState != "activating":
+			// A newly registered unit can still be inactive while its start
+			// job is queued. Only terminal failure states prove startup failed.
+			case loadState == "loaded" && (activeState == "failed" || activeState == "deactivating"):
 				return fmt.Errorf("transient attachment unit entered %s state", activeState)
 			default:
 				lastErr = fmt.Errorf("transient attachment unit is %s/%s", loadState, activeState)
@@ -806,6 +808,12 @@ type bridgeWaitResult struct {
 	code int
 	err  error
 }
+type attachmentContextKey struct{}
+
+func attachmentWasDetached(ctx context.Context) bool {
+	active, _ := ctx.Value(attachmentContextKey{}).(*activeAttachment)
+	return active != nil && active.detached.Load()
+}
 
 // runBridge owns all goroutines and resources associated with one upgraded
 // connection. It never touches any other attachment or the server listener.
@@ -946,6 +954,7 @@ func runBridge(ctx context.Context, conn *websocket.Conn, session PTYSession, co
 	if errors.Is(contextError, context.DeadlineExceeded) {
 		terminalMessage = "session expired"
 	}
+	detached := attachmentWasDetached(ctx)
 	naturalExit := resultReceived && contextError == nil
 	cancel()
 
@@ -983,7 +992,11 @@ func runBridge(ctx context.Context, conn *websocket.Conn, session PTYSession, co
 	}
 
 	closeCode := websocket.CloseNormalClosure
+	closeReason := ""
 	switch {
+	case detached:
+		_ = writer.message(websocket.TextMessage, encodeDetached())
+		closeReason = "attachment detached"
 	case terminalMessage != "":
 		_ = writer.message(websocket.TextMessage, encodeError(terminalMessage))
 		closeCode = websocket.ClosePolicyViolation
@@ -992,7 +1005,7 @@ func runBridge(ctx context.Context, conn *websocket.Conn, session PTYSession, co
 	case contextError == nil && resultReceived:
 		_ = writer.message(websocket.TextMessage, encodeExit(result.code))
 	}
-	_ = writer.control(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, ""))
+	_ = writer.control(websocket.CloseMessage, websocket.FormatCloseMessage(closeCode, closeReason))
 	_ = conn.Close()
 	return cleanupErr
 }

@@ -10,7 +10,7 @@ The runtime limits its own surface with a loopback-only listener, exact `Host`/`
 
 - Linux `amd64` or `arm64`.
 - Per-user systemd 254 or newer (unit supplied below). Never run it as a system service or as root.
-- An `herdr` executable and Herdr Unix socket on the same account.
+- A Herdr 0.9.x executable and Herdr Unix socket on the same account (verified with 0.9.1).
 - A browser-reachable HTTPS origin for the loopback listener.
 - Chromium is the only browser with a compatibility guarantee.
 
@@ -61,7 +61,7 @@ HERDR_WEB_CLIENT_PUBLIC_ORIGIN=https://terminal.example
 
 Herdr Web intentionally has no authentication mechanism. Do not expose it to users you do not trust. Protect it using the approach appropriate for your environment, such as a private network, VPN, SSH tunnel, firewall policy, or an access-controlled gateway. The project does not require a particular authentication provider or reverse proxy.
 
-Whatever carries traffic between the browser and the loopback listener must preserve the configured public `Host`. WebSocket upgrades must also preserve the exact browser `Origin` and `Sec-WebSocket-Protocol: herdr-web-client.v1`. The browser sends `X-Herdr-Web-Client-Request: session` on `GET /api/session`; this marker is a protocol check, not authentication.
+Whatever carries traffic between the browser and the loopback listener must preserve the configured public `Host`. WebSocket upgrades must also preserve the exact browser `Origin` and `Sec-WebSocket-Protocol: herdr-web-client.v1`. The browser sends `X-Herdr-Web-Client-Request: session` on `GET /api/session` and `POST /api/detach`; this marker is a protocol check, not authentication. Detachment also requires the exact public `Origin` and a JSON body containing the single-use, attachment-scoped nonce returned with the session conflict.
 
 ## Run
 
@@ -73,12 +73,17 @@ systemctl --user status herdr-web-client.service
 
 Run it as the account that owns the Herdr executable, PTY, and socket — the same-user relationship is by design. `loginctl enable-linger "$USER"` keeps it running without an interactive login session.
 
+When another browser is attached, **Try again** checks availability without interrupting it. **Detach other client and connect** explicitly closes that browser's attachment, waits for its PTY child to stop, and then connects this browser. Herdr's server, terminal panes, and running jobs keep running. The displaced page stays detached until its user presses **Reconnect**; reconnect timers and network changes cannot reclaim the session.
+
+Completion notifications use Herdr's per-pane semantic status subscriptions, with snapshot reconciliation and subscription refresh when panes open or close. No terminal output is needed for a background agent's transition to `done`.
+
 ## Troubleshooting
 
 - **The service exits immediately.** Read `journalctl --user -u herdr-web-client.service -e`. Startup fails closed on a missing required value, a non-HTTPS public origin, a non-loopback listener, or a non-absolute path.
-- **403.** The WebSocket `Origin` or the `/api/session` marker is missing or does not match exactly.
+- **403.** The exact `Origin`, API request marker, or nonce is missing, invalid, or expired.
 - **404.** The request `Host` differs from `HERDR_WEB_CLIENT_PUBLIC_ORIGIN`.
 - **The WebSocket does not attach.** The network path must support upgrades and preserve exactly one `herdr-web-client.v1` value. Nonces are single-use, and only one attachment can be active at a time.
+- **Another session is already attached.** Use **Detach other client and connect** to take over deliberately. If the other attachment changed or is still starting/stopping, refresh its state with **Try again** before choosing again. Failed child cleanup blocks a replacement rather than risking two active attachments.
 - **The terminal is silent or exits.** Check that `HERDR_WEB_CLIENT_HERDR_PATH` is executable, the workdir exists, and the socket at `HERDR_WEB_CLIENT_HERDR_SOCKET` is reachable as the service user. The web client does not launch a shell or repair a broken Herdr installation.
 
 ## Development

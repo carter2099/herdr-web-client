@@ -38,13 +38,15 @@ A secure deployment must satisfy all of these conditions:
 
 - restrict the application to trusted users using controls appropriate for the environment; Herdr Web provides no authentication or user authorization of its own;
 - bind the service to a numeric loopback address and expose it only through a network path you control;
-- serve the configured exact HTTPS origin and preserve its `Host` and WebSocket `Origin`;
+- serve the configured exact HTTPS origin and preserve its `Host`, WebSocket `Origin`, and detach-request `Origin`;
 - run the service, `herdr` executable, PTY, and Herdr Unix socket as the same unprivileged user, with private environment and socket directories;
 - keep the supplied parent user service's `NoNewPrivileges`, private temporary directory, physical-device path masks, read-only system/home policy, resource limits, restrictive file permissions, namespace restrictions, and read-only cgroup controls unless a documented host requirement justifies a change;
 - use systemd 254 or newer and do not weaken the per-attachment transient service's user-manager/device path masks, `ProtectControlGroups`, `RestrictNamespaces`, `KillMode=control-group`, or immediate kill settings;
 - keep the service environment file mode `0600` and never put credentials in source or logs.
 
 The server additionally uses exact origin/host checks, single-use nonces, one active attachment, bounded queues, deadlines, fixed-argument process execution, child-environment filtering, and systemd-owned per-attachment service teardown in the supported deployment. Foreground diagnostic runs use process-group teardown instead. These controls do not authenticate the caller, do not isolate a local process that already has the service user's privileges, and do not compensate for an access path open to untrusted users.
+
+Taking over an attachment is an explicit same-origin `POST /api/detach`, not a side effect of checking availability. It requires the API marker, JSON content type, and a short-lived, single-use nonce bound to the specific conflicting attachment. Expired, replayed, or stale nonces cannot detach a replacement client. Success is returned only after that web-owned attachment has been torn down; failed cleanup quarantines the slot. Detachment never signals the Herdr server or its terminal panes. These controls prevent unintended cross-origin or stale-session takeover, but do not authorize users independently of the deployment's access boundary.
 
 The device masks are defense in depth rather than a complete device sandbox: a per-user service cannot enforce `PrivateDevices` on every supported host, and a nonstandard path or a top-level device created after an attachment starts can retain the service user's permissions. Deploy a separately engineered system service/account boundary if complete physical-device isolation is part of the threat model.
 

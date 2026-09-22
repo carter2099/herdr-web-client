@@ -101,7 +101,7 @@ func TestHerdrSnapshotBoundsPaneCount(t *testing.T) {
 	}
 }
 
-func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
+func TestHerdrCompletionSourceRetainsTransitionsDuringSnapshot(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "herdr.sock")
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -111,39 +111,29 @@ func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
 
 	serverErrors := make(chan error, 1)
 	go func() {
-		snapshotConn, err := listener.Accept()
+		initialConn, err := listener.Accept()
 		if err != nil {
 			serverErrors <- err
 			return
 		}
-		var snapshotRequest map[string]any
-		if err := json.NewDecoder(snapshotConn).Decode(&snapshotRequest); err != nil {
+		defer initialConn.Close()
+		var initialRequest map[string]any
+		if err := json.NewDecoder(initialConn).Decode(&initialRequest); err != nil {
 			serverErrors <- err
 			return
 		}
-		if snapshotRequest["method"] != "session.snapshot" {
-			serverErrors <- errors.New("first request was not session.snapshot")
-			return
-		}
-		err = json.NewEncoder(snapshotConn).Encode(map[string]any{
-			"id": herdrSnapshotRequestID,
+		if err := json.NewEncoder(initialConn).Encode(map[string]any{
+			"id": initialRequest["id"],
 			"result": map[string]any{
 				"type": "session_snapshot",
-				"snapshot": map[string]any{
-					"panes": []map[string]any{{
-						"pane_id":      "w1:p1",
-						"agent":        "omp",
-						"agent_status": "working",
-					}},
-				},
+				"snapshot": map[string]any{"panes": []map[string]string{{
+					"pane_id": "w1:p1", "agent_status": "working",
+				}}},
 			},
-		})
-		_ = snapshotConn.Close()
-		if err != nil {
+		}); err != nil {
 			serverErrors <- err
 			return
 		}
-
 		eventConn, err := listener.Accept()
 		if err != nil {
 			serverErrors <- err
@@ -156,7 +146,7 @@ func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
 			return
 		}
 		if subscriptionRequest["method"] != "events.subscribe" {
-			serverErrors <- errors.New("second request was not events.subscribe")
+			serverErrors <- errors.New("expected subscription before reconciliation")
 			return
 		}
 		encoder := json.NewEncoder(eventConn)
@@ -168,26 +158,39 @@ func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
 			return
 		}
 
-		reconcileConn, err := listener.Accept()
+		snapshotConn, err := listener.Accept()
 		if err != nil {
 			serverErrors <- err
 			return
 		}
-		var reconcileRequest map[string]any
-		if err := json.NewDecoder(reconcileConn).Decode(&reconcileRequest); err != nil {
+		defer snapshotConn.Close()
+		var snapshotRequest map[string]any
+		if err := json.NewDecoder(snapshotConn).Decode(&snapshotRequest); err != nil {
 			serverErrors <- err
 			return
 		}
-		if reconcileRequest["method"] != "session.snapshot" {
-			serverErrors <- errors.New("third request was not session.snapshot")
-			return
+		// A whole completion occurs while the snapshot is in flight. Its final
+		// working state cannot reveal the intervening done transition.
+		for _, status := range []string{"done", "working"} {
+			if err := encoder.Encode(map[string]any{
+				"event": "pane.agent_status_changed",
+				"data": map[string]string{
+					"pane_id":      "w1:p1",
+					"agent":        "omp",
+					"agent_status": status,
+					"title":        "Review ready",
+				},
+			}); err != nil {
+				serverErrors <- err
+				return
+			}
 		}
-		err = json.NewEncoder(reconcileConn).Encode(map[string]any{
+		serverErrors <- json.NewEncoder(snapshotConn).Encode(map[string]any{
 			"id": herdrSnapshotRequestID,
 			"result": map[string]any{
 				"type": "session_snapshot",
 				"snapshot": map[string]any{
-					"panes": []map[string]any{{
+					"panes": []map[string]string{{
 						"pane_id":      "w1:p1",
 						"agent":        "omp",
 						"agent_status": "working",
@@ -195,28 +198,6 @@ func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
 				},
 			},
 		})
-		_ = reconcileConn.Close()
-		if err != nil {
-			serverErrors <- err
-			return
-		}
-		if err := encoder.Encode(map[string]any{
-			"event": "pane_updated",
-			"data": map[string]any{
-				"type": "pane_updated",
-				"pane": map[string]any{
-					"pane_id":                 "w1:p1",
-					"workspace_id":            "w1",
-					"agent":                   "omp",
-					"agent_status":            "done",
-					"terminal_title_stripped": "Review ready",
-				},
-			},
-		}); err != nil {
-			serverErrors <- err
-			return
-		}
-		serverErrors <- nil
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -235,7 +216,7 @@ func TestHerdrCompletionSourceStreamsDoneEvent(t *testing.T) {
 		t.Fatalf("completion = %+v", completion)
 	}
 	if err := <-serverErrors; err != nil {
-		t.Fatalf("fake Herdr API: %v", err)
+		t.Fatalf("fixture server: %v", err)
 	}
 }
 

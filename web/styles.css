@@ -240,6 +240,7 @@ button:disabled {
 }
 
 .app-shell[data-connection="offline"] .status-indicator,
+.app-shell[data-connection="detached"] .status-indicator,
 .app-shell[data-connection="error"] .status-indicator {
   background: var(--color-danger);
 }
@@ -380,7 +381,10 @@ button:disabled {
 }
 
 .connection-panel .button {
+  max-width: 100%;
   margin-top: var(--space-5);
+  text-align: left;
+  white-space: normal;
 }
 
 .connection-spinner {
@@ -503,6 +507,16 @@ button:disabled {
 .button--primary:hover:not(:disabled) {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
+}
+
+.button--secondary {
+  border-color: var(--color-accent-soft);
+  background: var(--color-surface-strong);
+}
+
+.button--secondary:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
 }
 
 .sheet {

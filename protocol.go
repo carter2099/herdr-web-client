@@ -62,6 +62,10 @@ type serverReadyMessage struct {
 	Type string `json:"type"`
 }
 
+type serverDetachedMessage struct {
+	Type string `json:"type"`
+}
+
 type serverExitMessage struct {
 	Type string `json:"type"`
 	Code int    `json:"code"`
@@ -196,6 +200,23 @@ func decodeResize(payload []byte) (Dimensions, error) {
 		return Dimensions{}, errInvalidResize
 	}
 	return (Dimensions{Cols: *message.Cols, Rows: *message.Rows}).normalized(), nil
+}
+
+func decodeDetach(payload []byte) (string, error) {
+	var message struct {
+		Nonce string `json:"nonce"`
+	}
+	if err := decodeJSONMessage(payload, &message); err != nil {
+		return "", err
+	}
+	if message.Nonce == "" {
+		return "", errors.New("detach nonce is required")
+	}
+	return message.Nonce, nil
+}
+
+func encodeDetached() []byte {
+	return mustMarshal(serverDetachedMessage{Type: "detached"})
 }
 
 func encodeReady() []byte {

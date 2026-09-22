@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,9 +24,14 @@ const (
 	sessionRequestHeader = "X-Herdr-Web-Client-Request"
 	sessionRequestValue  = "session"
 	maxOutstandingNonces = 32
+
+	maxOutstandingDetachTokens = 32
 )
 
-var errNonceCapacity = errors.New("too many outstanding session nonces")
+var (
+	errNonceCapacity       = errors.New("too many outstanding session nonces")
+	errDetachTokenCapacity = errors.New("too many outstanding detach tokens")
+)
 
 //go:embed web/dist
 var webDist embed.FS
@@ -99,15 +106,97 @@ func encodeNonce(value []byte) string {
 
 type activeAttachment struct {
 	cancel context.CancelFunc
+	done   chan struct{}
+
+	detached        atomic.Bool
+	detachable      bool
+	detachRequested bool
+	finished        bool
+	quarantined     bool
+	cleanupErr      error
+}
+
+type detachGrant struct {
+	attachment *activeAttachment
+	expiresAt  time.Time
+}
+
+type detachTokenStore struct {
+	mu    sync.Mutex
+	ttl   time.Duration
+	items map[string]detachGrant
+}
+
+func newDetachTokenStore(ttl time.Duration) *detachTokenStore {
+	if ttl <= 0 {
+		ttl = 60 * time.Second
+	}
+	return &detachTokenStore{ttl: ttl, items: make(map[string]detachGrant)}
+}
+
+func (d *detachTokenStore) issue(attachment *activeAttachment, now time.Time) (string, time.Time, error) {
+	if d == nil || attachment == nil {
+		return "", time.Time{}, errors.New("cannot issue detach token without an attachment")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pruneLocked(now)
+	for token, grant := range d.items {
+		if grant.attachment == attachment && grant.expiresAt.After(now) {
+			return token, grant.expiresAt, nil
+		}
+	}
+	if len(d.items) >= maxOutstandingDetachTokens {
+		return "", time.Time{}, errDetachTokenCapacity
+	}
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", time.Time{}, fmt.Errorf("generate detach token: %w", err)
+	}
+	token := encodeNonce(bytes)
+	expiresAt := now.Add(d.ttl)
+	d.items[token] = detachGrant{
+		attachment: attachment,
+		expiresAt:  expiresAt,
+	}
+	return token, expiresAt, nil
+}
+
+func (d *detachTokenStore) take(token string, now time.Time) (detachGrant, bool) {
+	if d == nil || token == "" {
+		return detachGrant{}, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	grant, ok := d.items[token]
+	if !ok {
+		d.pruneLocked(now)
+		return detachGrant{}, false
+	}
+	if !grant.expiresAt.After(now) {
+		delete(d.items, token)
+		return detachGrant{}, false
+	}
+	delete(d.items, token)
+	return grant, true
+}
+
+func (d *detachTokenStore) pruneLocked(now time.Time) {
+	for token, grant := range d.items {
+		if !grant.expiresAt.After(now) {
+			delete(d.items, token)
+		}
+	}
 }
 
 type Server struct {
-	cfg         Config
-	launcher    Launcher
-	completions AgentCompletionSource
-	socketSlots chan struct{}
-	nonces      *nonceStore
-	assets      http.Handler
+	cfg          Config
+	launcher     Launcher
+	completions  AgentCompletionSource
+	socketSlots  chan struct{}
+	nonces       *nonceStore
+	detachTokens *detachTokenStore
+	assets       http.Handler
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -132,14 +221,15 @@ func NewServer(cfg Config, launcher Launcher, completions AgentCompletionSource)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		cfg:         cfg,
-		socketSlots: make(chan struct{}, 1),
-		launcher:    launcher,
-		completions: completions,
-		nonces:      newNonceStore(cfg.NonceTTL),
-		assets:      http.FileServer(http.FS(assets)),
-		ctx:         ctx,
-		cancel:      cancel,
+		cfg:          cfg,
+		socketSlots:  make(chan struct{}, 1),
+		launcher:     launcher,
+		completions:  completions,
+		nonces:       newNonceStore(cfg.NonceTTL),
+		detachTokens: newDetachTokenStore(cfg.NonceTTL),
+		assets:       http.FileServer(http.FS(assets)),
+		ctx:          ctx,
+		cancel:       cancel,
 	}, nil
 }
 
@@ -214,6 +304,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSession(w, r)
+	case "/api/detach":
+		if r.Method != http.MethodPost {
+			methodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.handleDetach(w, r)
 	case "/api/attach":
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, http.MethodGet)
@@ -232,20 +328,68 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleStatic(w, r)
 	}
 }
-func (s *Server) claimActive(cancel context.CancelFunc) bool {
+func (s *Server) claimActiveAttachment(active *activeAttachment) bool {
+	if active == nil {
+		return false
+	}
 	s.activeMu.Lock()
 	defer s.activeMu.Unlock()
 	if s.active != nil {
 		return false
 	}
-	s.active = &activeAttachment{cancel: cancel}
+	s.active = active
 	return true
 }
 
-func (s *Server) releaseActive(_ context.CancelFunc) {
+func (s *Server) markAttachmentDetachable(active *activeAttachment) bool {
 	s.activeMu.Lock()
-	s.active = nil
+	defer s.activeMu.Unlock()
+	if s.active != active || active.finished || active.quarantined || active.detachRequested {
+		return false
+	}
+	active.detachable = true
+	return true
+}
+
+func (s *Server) finishActive(active *activeAttachment, cleanupErr error) {
+	if active == nil {
+		return
+	}
+	s.activeMu.Lock()
+	active.detachable = false
+	active.finished = true
+	active.cleanupErr = cleanupErr
+	if s.active == active {
+		s.active = nil
+	}
 	s.activeMu.Unlock()
+}
+
+func (s *Server) activeCleanupError(active *activeAttachment) error {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if active == nil {
+		return errors.New("attachment is unavailable")
+	}
+	return active.cleanupErr
+}
+
+func (s *Server) attachmentQuarantined(active *activeAttachment) bool {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	return active != nil && active.quarantined
+}
+
+func (s *Server) quarantineAttachment(active *activeAttachment) {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if active != nil {
+		active.quarantined = true
+		if s.active == active {
+			// Cancel while ownership is locked, never after a replacement claims it.
+			s.cancel()
+		}
+	}
 }
 
 func methodNotAllowed(w http.ResponseWriter, allowed string) {
@@ -259,7 +403,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.socketBusy() {
-		http.Error(w, "another attachment is already active", http.StatusConflict)
+		type conflictResponse struct {
+			Error       string     `json:"error"`
+			DetachNonce string     `json:"detach_nonce,omitempty"`
+			ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+		}
+		response := conflictResponse{Error: "another attachment is already active"}
+		if nonce, expiresAt, ok := s.issueDetachToken(time.Now()); ok {
+			response.DetachNonce = nonce
+			response.ExpiresAt = &expiresAt
+		}
+		writeJSON(w, http.StatusConflict, response)
 		return
 	}
 	now := time.Now()
@@ -276,6 +430,98 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		Nonce     string    `json:"nonce"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}{Nonce: nonce, ExpiresAt: expiresAt})
+}
+
+func (s *Server) issueDetachToken(now time.Time) (string, time.Time, bool) {
+	s.activeMu.Lock()
+	active := s.active
+	detachable := active != nil && active.detachable && !active.finished && !active.quarantined && !active.detachRequested
+	s.activeMu.Unlock()
+	if !detachable {
+		return "", time.Time{}, false
+	}
+	token, expiresAt, err := s.detachTokens.issue(active, now)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	s.activeMu.Lock()
+	stillDetachable := s.active == active && active.detachable && !active.finished && !active.quarantined && !active.detachRequested
+	s.activeMu.Unlock()
+	if !stillDetachable {
+		return "", time.Time{}, false
+	}
+	return token, expiresAt, true
+}
+
+func (s *Server) handleDetach(w http.ResponseWriter, r *http.Request) {
+	if !hasExactOrigin(r, s.cfg.PublicOrigin) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if values := r.Header.Values(sessionRequestHeader); len(values) != 1 || values[0] != sessionRequestValue {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	contentTypes := r.Header.Values("Content-Type")
+	if len(contentTypes) != 1 || !strings.EqualFold(strings.TrimSpace(contentTypes[0]), "application/json") {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(s.cfg.HelloTimeout))
+	maxBytes := s.cfg.MaxInboundBytes
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024
+	}
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
+	if err != nil || int64(len(payload)) > maxBytes {
+		http.Error(w, "invalid detach request", http.StatusBadRequest)
+		return
+	}
+	token, err := decodeDetach(payload)
+	if err != nil {
+		http.Error(w, "invalid detach request", http.StatusBadRequest)
+		return
+	}
+	grant, ok := s.detachTokens.take(token, time.Now())
+	if !ok {
+		http.Error(w, "invalid or expired detach token", http.StatusForbidden)
+		return
+	}
+
+	s.activeMu.Lock()
+	active := s.active
+	if active == nil || active != grant.attachment || active.finished {
+		s.activeMu.Unlock()
+		http.Error(w, "attachment is no longer active", http.StatusConflict)
+		return
+	}
+	if !active.detachable || active.detachRequested || active.quarantined {
+		s.activeMu.Unlock()
+		http.Error(w, "attachment is no longer detachable", http.StatusConflict)
+		return
+	}
+	active.detachable = false
+	active.detachRequested = true
+	active.detached.Store(true)
+	cancel := active.cancel
+	s.activeMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	timer := time.NewTimer(s.cfg.WriteTimeout)
+	defer timer.Stop()
+	select {
+	case <-active.done:
+		if cleanupErr := s.activeCleanupError(active); cleanupErr != nil {
+			http.Error(w, "attachment teardown failed", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	case <-timer.C:
+		s.quarantineAttachment(active)
+		http.Error(w, "attachment teardown could not be confirmed", http.StatusServiceUnavailable)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -314,18 +560,27 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	releaseSocket := true
+	var active *activeAttachment
+	var cleanupErr error
 	defer func() {
+		s.finishActive(active, cleanupErr)
 		if releaseSocket {
 			s.releaseSocket()
 		}
+		if active != nil {
+			close(active.done)
+		}
 	}()
 	quarantine := func(err error) {
-		if err == nil {
+		if err != nil {
+			releaseSocket = false
+			s.quarantineAttachment(active)
+			log.Printf("attachment teardown could not be confirmed; server quarantined: %v", err)
 			return
 		}
-		releaseSocket = false
-		s.cancel()
-		log.Printf("attachment teardown could not be confirmed; server quarantined: %v", err)
+		if s.attachmentQuarantined(active) {
+			releaseSocket = false
+		}
 	}
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:    32 * 1024,
@@ -362,13 +617,17 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	}
 
 	attachCtx, cancel := context.WithCancel(s.ctx)
-	if !s.claimActive(cancel) {
+	active = &activeAttachment{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	if !s.claimActiveAttachment(active) {
 		cancel()
 		writeAttachError(conn, "another attachment is already active", websocket.CloseTryAgainLater)
 		return
 	}
-	defer s.releaseActive(cancel)
 	defer cancel()
+	attachCtx = context.WithValue(attachCtx, attachmentContextKey{}, active)
 
 	if err := attachCtx.Err(); err != nil {
 		writeAttachError(conn, "server is shutting down", websocket.CloseGoingAway)
@@ -380,7 +639,8 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		if session != nil {
 			closeErr := session.Close()
 			_, waitErr := session.Wait()
-			quarantine(errors.Join(closeErr, waitErr))
+			cleanupErr = errors.Join(closeErr, waitErr)
+			quarantine(cleanupErr)
 		}
 		writeAttachError(conn, "unable to start terminal", websocket.CloseInternalServerErr)
 		return
@@ -392,11 +652,21 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 	if err := attachCtx.Err(); err != nil {
 		closeErr := session.Close()
 		_, waitErr := session.Wait()
-		quarantine(errors.Join(closeErr, waitErr))
+		cleanupErr = errors.Join(closeErr, waitErr)
+		quarantine(cleanupErr)
 		writeAttachError(conn, "server is shutting down", websocket.CloseGoingAway)
 		return
 	}
-	quarantine(runBridge(attachCtx, conn, session, s.completions, s.cfg))
+	if !s.markAttachmentDetachable(active) {
+		closeErr := session.Close()
+		_, waitErr := session.Wait()
+		cleanupErr = errors.Join(closeErr, waitErr)
+		quarantine(cleanupErr)
+		writeAttachError(conn, "server is shutting down", websocket.CloseGoingAway)
+		return
+	}
+	cleanupErr = runBridge(attachCtx, conn, session, s.completions, s.cfg)
+	quarantine(cleanupErr)
 }
 
 func hasExactOrigin(r *http.Request, expected string) bool {

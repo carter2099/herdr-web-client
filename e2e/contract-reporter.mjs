@@ -1,11 +1,13 @@
 const expectedByProject = {
   'chromium-desktop': [
     '@desktop serves the exact embedded production bundle and bridges PTY/completion state',
+    '@desktop @mobile an explicit detach takes over safely and leaves the displaced page detached',
     '@desktop a crashed Herdr client reports its exit and can start a fresh attachment',
     '@desktop closing the attachment cancels and reaps only its target child',
   ],
   'chromium-mobile': [
     '@mobile terminal taps and Type use native input without control refocus',
+    '@desktop @mobile an explicit detach takes over safely and leaves the displaced page detached',
     '@mobile touch gestures scroll terminal history',
   ],
 };

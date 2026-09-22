@@ -23,6 +23,8 @@ const (
 var errHerdrMessageTooLarge = errors.New("herdr message exceeds size limit")
 var errCompletionTrackerFull = errors.New("herdr completion tracker reached its pane limit")
 
+var errHerdrPaneSetChanged = errors.New("herdr pane subscriptions need refresh")
+
 // AgentCompletion is one background agent transition that Herdr considers done.
 type AgentCompletion struct {
 	Agent string
@@ -88,6 +90,7 @@ type herdrPaneState struct {
 	WorkspaceID           string `json:"workspace_id"`
 	Agent                 string `json:"agent"`
 	AgentStatus           string `json:"agent_status"`
+	Title                 string `json:"title"`
 	TerminalTitle         string `json:"terminal_title"`
 	TerminalTitleStripped string `json:"terminal_title_stripped"`
 }
@@ -112,11 +115,8 @@ type herdrSubscriptionResponse struct {
 }
 
 type herdrPaneEvent struct {
-	Event string `json:"event"`
-	Data  struct {
-		Type string         `json:"type"`
-		Pane herdrPaneState `json:"pane"`
-	} `json:"data"`
+	Event string         `json:"event"`
+	Data  herdrPaneState `json:"data"`
 }
 
 type completionTracker map[string]string
@@ -143,6 +143,7 @@ func validHerdrPane(pane herdrPaneState) bool {
 	return len(pane.PaneID) <= maxHerdrFieldBytes &&
 		len(pane.WorkspaceID) <= maxHerdrFieldBytes &&
 		len(pane.Agent) <= maxHerdrFieldBytes &&
+		len(pane.Title) <= maxHerdrFieldBytes &&
 		len(pane.AgentStatus) <= maxHerdrFieldBytes &&
 		len(pane.TerminalTitle) <= maxHerdrFieldBytes &&
 		len(pane.TerminalTitleStripped) <= maxHerdrFieldBytes
@@ -179,7 +180,10 @@ func (t completionTracker) observe(pane herdrPaneState) (AgentCompletion, bool, 
 	if pane.AgentStatus != "done" || (known && previous == "done") {
 		return AgentCompletion{}, false, nil
 	}
-	title := strings.TrimSpace(pane.TerminalTitleStripped)
+	title := strings.TrimSpace(pane.Title)
+	if title == "" {
+		title = strings.TrimSpace(pane.TerminalTitleStripped)
+	}
 	if title == "" {
 		title = strings.TrimSpace(pane.TerminalTitle)
 	}
@@ -193,15 +197,20 @@ func (s *herdrCompletionSource) Watch(ctx context.Context, emit func(AgentComple
 	if emit == nil {
 		return errors.New("completion sink is required")
 	}
-
 	panes, err := s.snapshot(ctx)
 	if err != nil {
 		return err
 	}
-	if err := validateHerdrPanes(panes); err != nil {
-		return err
-	}
 	tracker := newCompletionTracker(panes)
+	for {
+		err := s.watchPanes(ctx, tracker, emit)
+		if !errors.Is(err, errHerdrPaneSetChanged) {
+			return err
+		}
+	}
+}
+
+func (s *herdrCompletionSource) watchPanes(ctx context.Context, tracker completionTracker, emit func(AgentCompletion) error) error {
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", s.socketPath)
 	if err != nil {
@@ -213,12 +222,22 @@ func (s *herdrCompletionSource) Watch(ctx context.Context, emit func(AgentComple
 		_ = conn.Close()
 	}()
 
+	subscriptions := make([]map[string]string, 0, len(tracker)+2)
+	subscriptions = append(subscriptions,
+		map[string]string{"type": "pane.created"},
+		map[string]string{"type": "pane.closed"},
+	)
+	for paneID := range tracker {
+		subscriptions = append(subscriptions, map[string]string{
+			"type": "pane.agent_status_changed", "pane_id": paneID,
+		})
+	}
 	encoder := json.NewEncoder(conn)
 	if err := encoder.Encode(map[string]any{
 		"id":     herdrCompletionsRequestID,
 		"method": "events.subscribe",
 		"params": map[string]any{
-			"subscriptions": []map[string]string{{"type": "pane.updated"}},
+			"subscriptions": subscriptions,
 		},
 	}); err != nil {
 		return fmt.Errorf("subscribe to Herdr pane events: %w", err)
@@ -239,23 +258,11 @@ func (s *herdrCompletionSource) Watch(ctx context.Context, emit func(AgentComple
 		return errors.New("herdr returned an invalid completion subscription response")
 	}
 
-	latestPanes, err := s.snapshot(ctx)
-	if err != nil {
-		return fmt.Errorf("reconcile Herdr pane snapshot: %w", err)
-	}
-	if err := validateHerdrPanes(latestPanes); err != nil {
-		return fmt.Errorf("reconcile Herdr pane snapshot: %w", err)
-	}
-	for _, pane := range latestPanes {
-		completion, completed, err := tracker.observe(pane)
-		if err != nil {
-			return fmt.Errorf("track reconciled Herdr pane: %w", err)
-		}
-		if completed {
-			if err := emit(completion); err != nil {
-				return err
-			}
-		}
+	// Status changes are not pane.updated lifecycle events in Herdr 0.9.
+	// Reconcile only after subscribing; transitions during this snapshot stay
+	// queued, including a complete done -> working cycle.
+	if err := s.reconcilePanes(ctx, tracker, emit); err != nil {
+		return err
 	}
 
 	for {
@@ -263,13 +270,17 @@ func (s *herdrCompletionSource) Watch(ctx context.Context, emit func(AgentComple
 		if err := decodeHerdrMessage(decoder, reader, &event); err != nil {
 			return completionReadError(ctx, "read Herdr pane event", err)
 		}
-		if event.Event != "pane_updated" || event.Data.Type != "pane_updated" {
+		switch event.Event {
+		case "pane_created", "pane_closed":
+			if err := s.reconcilePanes(ctx, tracker, emit); err != nil {
+				return err
+			}
+			continue
+		case "pane.agent_status_changed":
+		default:
 			continue
 		}
-		if !validHerdrPane(event.Data.Pane) {
-			return errors.New("herdr pane event contains an oversized field")
-		}
-		completion, completed, err := tracker.observe(event.Data.Pane)
+		completion, completed, err := tracker.observe(event.Data)
 		if err != nil {
 			return fmt.Errorf("track Herdr pane event: %w", err)
 		}
@@ -279,6 +290,46 @@ func (s *herdrCompletionSource) Watch(ctx context.Context, emit func(AgentComple
 			}
 		}
 	}
+}
+
+func (s *herdrCompletionSource) reconcilePanes(ctx context.Context, tracker completionTracker, emit func(AgentCompletion) error) error {
+	panes, err := s.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	present := make(map[string]struct{}, len(panes))
+	changed := false
+	for _, pane := range panes {
+		if pane.PaneID == "" {
+			continue
+		}
+		present[pane.PaneID] = struct{}{}
+		if _, known := tracker[pane.PaneID]; !known {
+			changed = true
+		}
+	}
+	// Remove closed panes before observing replacements at the state limit.
+	for paneID := range tracker {
+		if _, exists := present[paneID]; !exists {
+			delete(tracker, paneID)
+			changed = true
+		}
+	}
+	for _, pane := range panes {
+		completion, completed, err := tracker.observe(pane)
+		if err != nil {
+			return err
+		}
+		if completed {
+			if err := emit(completion); err != nil {
+				return err
+			}
+		}
+	}
+	if changed {
+		return errHerdrPaneSetChanged
+	}
+	return nil
 }
 
 func (s *herdrCompletionSource) snapshot(ctx context.Context) ([]herdrPaneState, error) {

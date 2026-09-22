@@ -74,3 +74,18 @@ func TestEncodeAgentDone(t *testing.T) {
 		t.Fatalf("agent done message = %q, want %q", got, want)
 	}
 }
+
+func TestDetachedControlAndDetachRequestWireMessages(t *testing.T) {
+	if got := string(encodeDetached()); got != `{"type":"detached"}` {
+		t.Fatalf("detached control = %q", got)
+	}
+	if nonce, err := decodeDetach([]byte(`{"nonce":"detach-token"}`)); err != nil || nonce != "detach-token" {
+		t.Fatalf("decode detach = %q, %v", nonce, err)
+	}
+	if _, err := decodeDetach([]byte(`{"nonce":"detach-token","extra":true}`)); err == nil {
+		t.Fatal("decodeDetach accepted an unknown field")
+	}
+	if _, err := decodeDetach([]byte(`{"nonce":"detach-token","nonce":"other"}`)); err == nil {
+		t.Fatal("decodeDetach accepted duplicate fields")
+	}
+}

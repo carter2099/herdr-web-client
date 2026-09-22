@@ -359,8 +359,8 @@ e2e(
     await waitForState(
       herdr,
       (current) =>
-        current.subscription_requests === 1 && current.snapshot_requests >= 2,
-      'Herdr snapshot/subscribe/reconcile must be active',
+        current.subscription_requests === 1 && current.snapshot_requests >= 1,
+      'Herdr subscription and initial snapshot must be active',
     );
     await herdr.complete();
     await expect(page.locator('#completion-toast')).toBeVisible({
@@ -375,6 +375,81 @@ e2e(
         current.completion_events === 1 && current.reconcile_snapshots >= 1,
       'a real pane.updated completion event must reach the browser after reconciliation',
     );
+  },
+);
+
+e2e(
+  '@desktop @mobile an explicit detach takes over safely and leaves the displaced page detached',
+  async ({ page, herdr }) => {
+    const takeoverPage = await page.context().newPage();
+    try {
+      await openReady(page, herdr);
+
+      await takeoverPage.goto(`${herdr.origin}/`, {
+        waitUntil: 'domcontentloaded',
+      });
+      await expect(takeoverPage.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'limited',
+        { timeout: 20_000 },
+      );
+      const detachButton = takeoverPage.getByRole('button', {
+        name: 'Detach other client and connect',
+        exact: true,
+      });
+      await expect(detachButton).toBeVisible();
+      await takeoverPage
+        .getByRole('button', {
+          name: 'Try again',
+          exact: true,
+        })
+        .click();
+      await expect(takeoverPage.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'limited',
+      );
+      await expect(page.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'ready',
+      );
+      await expect(detachButton).toBeVisible();
+
+      await detachButton.click();
+
+      await expect(takeoverPage.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'ready',
+        { timeout: 20_000 },
+      );
+      await expect(page.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'detached',
+        { timeout: 20_000 },
+      );
+
+      await page.evaluate(() => {
+        window.dispatchEvent(new Event('pagehide'));
+        const resume = new Event('pageshow');
+        Object.defineProperty(resume, 'persisted', { value: true });
+        window.dispatchEvent(resume);
+        window.dispatchEvent(new Event('online'));
+      });
+      await expect(page.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'detached',
+      );
+
+      const takeoverInput = 'fixture-takeover-input';
+      await takeoverPage.locator('#terminal textarea').focus();
+      await takeoverPage.keyboard.insertText(takeoverInput);
+      await waitForState(
+        herdr,
+        (state) => decodedInputs(state).join('').includes(takeoverInput),
+        'the replacement attachment must continue forwarding terminal input',
+      );
+    } finally {
+      await takeoverPage.close();
+    }
   },
 );
 
