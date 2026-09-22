@@ -379,7 +379,7 @@ e2e(
 );
 
 e2e(
-  '@desktop @mobile an explicit detach takes over safely and leaves the displaced page detached',
+  '@desktop @mobile @takeover an explicit detach takes over safely and leaves the displaced page detached',
   async ({ page, herdr }) => {
     const takeoverPage = await page.context().newPage();
     try {
@@ -414,7 +414,13 @@ e2e(
       );
       await expect(detachButton).toBeVisible();
 
+      const detachResponse = takeoverPage.waitForResponse(
+        (response) =>
+          response.url() === `${herdr.origin}/api/detach` &&
+          response.request().method() === 'POST',
+      );
       await detachButton.click();
+      expect((await detachResponse).status()).toBe(204);
 
       await expect(takeoverPage.locator('#app')).toHaveAttribute(
         'data-connection',
@@ -446,6 +452,41 @@ e2e(
         herdr,
         (state) => decodedInputs(state).join('').includes(takeoverInput),
         'the replacement attachment must continue forwarding terminal input',
+      );
+    } finally {
+      await takeoverPage.close();
+    }
+  },
+);
+
+e2e(
+  '@desktop @mobile @takeover an expired displayed token leaves a usable takeover action',
+  async ({ page, herdr }) => {
+    await openReady(page, herdr);
+    const takeoverPage = await page.context().newPage();
+    try {
+      await takeoverPage.clock.install();
+      await takeoverPage.goto(`${herdr.origin}/`);
+      await expect(takeoverPage.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'limited',
+      );
+      // Advance only this browser beyond the credential lifetime. The action
+      // must remain usable, including when the phone's clock is ahead.
+      await takeoverPage.clock.fastForward(65_000);
+      const detachButton = takeoverPage.getByRole('button', {
+        name: 'Detach other client and connect',
+        exact: true,
+      });
+      await expect(detachButton).toBeVisible();
+      await detachButton.click();
+      await expect(takeoverPage.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'ready',
+      );
+      await expect(page.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'detached',
       );
     } finally {
       await takeoverPage.close();

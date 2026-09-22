@@ -12,7 +12,7 @@ The runtime limits its own surface with a loopback-only listener, exact `Host`/`
 - Per-user systemd 254 or newer (unit supplied below). Never run it as a system service or as root.
 - A Herdr 0.9.x executable and Herdr Unix socket on the same account (verified with 0.9.1).
 - A browser-reachable HTTPS origin for the loopback listener.
-- Chromium is the only browser with a compatibility guarantee.
+- Chromium is the primary browser compatibility target; attachment takeover is also regression-tested with mobile WebKit.
 
 ## Install
 
@@ -63,6 +63,8 @@ Herdr Web intentionally has no authentication mechanism. Do not expose it to use
 
 Whatever carries traffic between the browser and the loopback listener must preserve the configured public `Host`. WebSocket upgrades must also preserve the exact browser `Origin` and `Sec-WebSocket-Protocol: herdr-web-client.v1`. The browser sends `X-Herdr-Web-Client-Request: session` on `GET /api/session` and `POST /api/detach`; this marker is a protocol check, not authentication. Detachment also requires the exact public `Origin` and a JSON body containing the single-use, attachment-scoped nonce returned with the session conflict.
 
+The detach fetch uses `referrerPolicy: "same-origin"` so WebKit preserves the real `Origin` on its same-origin POST despite the page's default `no-referrer` policy. The server still rejects missing, `null`, or foreign origins.
+
 ## Run
 
 ```sh
@@ -74,6 +76,8 @@ systemctl --user status herdr-web-client.service
 Run it as the account that owns the Herdr executable, PTY, and socket — the same-user relationship is by design. `loginctl enable-linger "$USER"` keeps it running without an interactive login session.
 
 When another browser is attached, **Try again** checks availability without interrupting it. **Detach other client and connect** explicitly closes that browser's attachment, waits for its PTY child to stop, and then connects this browser. Herdr's server, terminal panes, and running jobs keep running. The displaced page stays detached until its user presses **Reconnect**; reconnect timers and network changes cannot reclaim the session.
+
+The takeover button remains available while you wait. Tapping it first refreshes the attachment-scoped token and its lifetime, so expiry or a phone clock mismatch does not remove the action. Rejections stay visible in the busy panel rather than silently restarting the connection flow.
 
 Completion notifications use Herdr's per-pane semantic status subscriptions, with snapshot reconciliation and subscription refresh when panes open or close. No terminal output is needed for a background agent's transition to `done`.
 
@@ -93,7 +97,7 @@ Bun exactly 1.3.14, Go 1.27, and ShellCheck exactly 0.10.0. `web/dist` is tracke
 ```sh
 bun install --frozen-lockfile
 scripts/verify        # fast checks; run before every push
-scripts/verify-full   # ShellCheck, staticcheck, race tests, release packaging, Chromium E2E
+scripts/verify-full   # static/race checks, release packaging, Chromium and WebKit E2E
 ```
 
 Releases are cut by maintainers with `scripts/verify-full && scripts/release vX.Y.Z`, which requires a green `main` CI run for the exact commit. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).

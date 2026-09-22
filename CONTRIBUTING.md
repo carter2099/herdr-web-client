@@ -41,14 +41,14 @@ Run the fast deterministic checks before opening a pull request:
 scripts/verify
 ```
 
-Run the complete deterministic checks before requesting review for protocol, PTY, socket, embedding, deployment, or release changes. Install the pinned browser once first:
+Run the complete deterministic checks before requesting review for protocol, PTY, socket, embedding, deployment, or release changes. Install the pinned browsers once first:
 
 ```sh
-bunx --no-install playwright install --with-deps chromium
+bunx --no-install playwright install --with-deps chromium webkit
 scripts/verify-full
 ```
 
-`verify-full` includes pinned static analysis and workflow validation, race testing, tagged compilation, secret scanning, deterministic release-package and sandbox-install checks, and Chromium E2E against the exact built binary. The E2E must exercise that binary and its embedded bundle through the local TLS fixture; do not replace it with a test-only bypass route. Current vulnerability feeds and extended randomized fuzzing run nightly and on manual dispatch, not as mutable PR gates.
+`verify-full` includes pinned static analysis and workflow validation, race testing, tagged compilation, secret scanning, deterministic release-package and sandbox-install checks, Chromium desktop/mobile E2E, and mobile WebKit takeover regressions against the exact built binary. The E2E must exercise that binary and its embedded bundle through the local TLS fixture; do not replace it with a test-only bypass route. Current vulnerability feeds and extended randomized fuzzing run nightly and on manual dispatch, not as mutable PR gates.
 
 The required pull-request merge status is `CI / verify`; `main` runs the same workflow after merge. Run focused tests while iterating, `scripts/verify` before pushing, and `scripts/verify-full` for the sensitive changes listed above and every release. Do not weaken or skip a layer to accommodate a change.
 

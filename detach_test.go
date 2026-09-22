@@ -17,6 +17,23 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestRefreshingDetachGrantProvidesFullLifetime(t *testing.T) {
+	store := newDetachTokenStore(time.Second)
+	active := &activeAttachment{}
+	now := time.Unix(1_000, 0)
+	if _, _, err := store.issue(active, now); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, _, err := store.issue(active, now.Add(750*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The click's renewed grant remains valid past the original page's expiry.
+	if _, ok := store.take(refreshed, now.Add(1500*time.Millisecond)); !ok {
+		t.Fatal("refreshed grant expired on the original token's deadline")
+	}
+}
+
 type detachTestSession struct {
 	readClosed chan struct{}
 	waitClosed chan struct{}

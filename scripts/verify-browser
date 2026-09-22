@@ -69,7 +69,7 @@ trap cleanup EXIT
 cd -- "$ROOT"
 GOOS=linux GOARCH=$host_arch CGO_ENABLED=0 \
   go build -trimpath -buildvcs=false -o "$fixture" ./cmd/herdr-web-client-testfixture
-for project in chromium-desktop chromium-mobile; do
+for project in chromium-desktop chromium-mobile webkit-mobile; do
   HERDR_WEB_CLIENT_EXPECTED_PROJECT=$project \
   HERDR_WEB_CLIENT_ARTIFACT=$artifact \
   HERDR_WEB_CLIENT_DIST=$ROOT/web/dist \

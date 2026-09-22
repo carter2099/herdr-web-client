@@ -45,5 +45,12 @@ export default defineConfig({
         hasTouch: true,
       },
     },
+    {
+      name: 'webkit-mobile',
+      grep: /@takeover/,
+      use: {
+        ...devices['iPhone 13'],
+      },
+    },
   ],
 });

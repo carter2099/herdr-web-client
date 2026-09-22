@@ -233,7 +233,6 @@ let pageSuspended = false;
 let manuallyDetached = false;
 let detachPending = false;
 let detachCredential = null;
-let detachExpiryTimer = null;
 let lastSentDimensions = null;
 let pastePending = false;
 let activeSheet = null;
@@ -338,43 +337,6 @@ function showAgentCompletion(message) {
   }, COMPLETION_TOAST_MS);
   playCompletionPing(completionAudioContext);
 }
-function isUsableDetachCredential(credential) {
-  return Boolean(
-    credential &&
-      typeof credential.nonce === 'string' &&
-      credential.nonce.length > 0 &&
-      typeof credential.expiresAt === 'string' &&
-      Number.isFinite(credential.expiresAtMs) &&
-      credential.expiresAtMs > Date.now(),
-  );
-}
-
-function clearDetachCredential() {
-  if (detachExpiryTimer !== null) {
-    window.clearTimeout(detachExpiryTimer);
-    detachExpiryTimer = null;
-  }
-  detachCredential = null;
-}
-
-function rememberDetachCredential(credential) {
-  clearDetachCredential();
-  if (!isUsableDetachCredential(credential)) {
-    return;
-  }
-  detachCredential = credential;
-  const delay = Math.max(0, credential.expiresAtMs - Date.now());
-  detachExpiryTimer = window.setTimeout(() => {
-    if (detachCredential !== credential) {
-      return;
-    }
-    clearDetachCredential();
-    if (connectionState === 'limited') {
-      setConnectionState('limited');
-      announce('The detach option expired. Try again to refresh it.');
-    }
-  }, delay);
-}
 
 function stateView(state, context = {}) {
   switch (state) {
@@ -402,13 +364,15 @@ function stateView(state, context = {}) {
         detail: '',
       };
     case 'limited': {
-      const canDetach = isUsableDetachCredential(context.detachCredential);
+      const canDetach = Boolean(context.detachCredential);
       return {
         status: 'Attachment busy',
         title: 'Herdr is already attached',
-        detail: canDetach
-          ? 'Only one browser attachment can be active. Detaching it disconnects only the other browser; terminal processes keep running.'
-          : 'Only one browser attachment can be active. Close the other attachment, then try again.',
+        detail:
+          context.detail ||
+          (canDetach
+            ? 'Only one browser attachment can be active. Detaching it disconnects only the other browser; terminal processes keep running.'
+            : 'The other attachment is starting or stopping. Try again shortly.'),
         action: 'Try again',
         detachAction: canDetach ? 'Detach other client and connect' : '',
       };
@@ -624,7 +588,7 @@ function syncConnectionControls() {
   }
 
   connectionAction.disabled = detachPending;
-  const detachAvailable = isUsableDetachCredential(detachCredential);
+  const detachAvailable = Boolean(detachCredential);
   detachAction.hidden = !detachAvailable || !detachAction.dataset.label;
   detachAction.disabled = detachPending || !detachAvailable;
   detachAction.setAttribute('aria-busy', String(detachPending));
@@ -645,11 +609,8 @@ function syncConnectionControls() {
 function setConnectionState(state, context = {}) {
   const previousState = connectionState;
   connectionState = state;
-  if (state === 'limited') {
-    rememberDetachCredential(context.detachCredential);
-  } else {
-    clearDetachCredential();
-  }
+  detachCredential =
+    state === 'limited' ? context.detachCredential || null : null;
   const view = stateView(state, {
     ...context,
     detachCredential,
@@ -1075,15 +1036,10 @@ function parseDetachCredential(payload) {
   ) {
     return null;
   }
-  const expiresAtMs = Date.parse(payload.expires_at);
-  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+  if (!Number.isFinite(Date.parse(payload.expires_at))) {
     return null;
   }
-  return {
-    nonce: payload.detach_nonce,
-    expiresAt: payload.expires_at,
-    expiresAtMs,
-  };
+  return { nonce: payload.detach_nonce };
 }
 
 async function requestSession(signal) {
@@ -1182,6 +1138,9 @@ async function detachOtherClientRequest(credential, signal) {
       credentials: 'same-origin',
       cache: 'no-store',
       redirect: 'manual',
+      // WebKit applies no-referrer to Origin on same-origin POSTs, sending
+      // "null". Preserve the real same-origin header without allowing CORS.
+      referrerPolicy: 'same-origin',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -1577,6 +1536,7 @@ function openAttachment(session, generation, automatic) {
 async function beginConnection({
   automatic = false,
   resetBackoff = false,
+  session = null,
 } = {}) {
   if (automatic && manuallyDetached) {
     return;
@@ -1587,7 +1547,7 @@ async function beginConnection({
   if (!automatic) {
     manuallyDetached = false;
   }
-  clearDetachCredential();
+  detachCredential = null;
   clearReconnectTimers();
   if (resetBackoff) {
     reconnectAttempt = 0;
@@ -1610,12 +1570,13 @@ async function beginConnection({
   });
 
   try {
-    const session = await requestSession(sessionController.signal);
+    const connectionSession =
+      session || (await requestSession(sessionController.signal));
     if (generation !== connectionGeneration || pageSuspended) {
       return;
     }
     sessionController = null;
-    openAttachment(session, generation, automatic);
+    openAttachment(connectionSession, generation, automatic);
   } catch (error) {
     if (
       generation !== connectionGeneration ||
@@ -1677,35 +1638,50 @@ async function detachAndConnect() {
     return;
   }
 
-  const credential = detachCredential;
-  if (!isUsableDetachCredential(credential)) {
-    clearDetachCredential();
-    await beginConnection({ resetBackoff: true });
-    return;
-  }
-
   detachPending = true;
   syncConnectionControls();
   const controller = new AbortController();
   detachController = controller;
+  let credential = detachCredential;
   try {
-    await detachOtherClientRequest(credential, controller.signal);
+    // Request a fresh, server-validated grant on the click, not when the busy
+    // page was opened. Waiting or a skewed phone clock cannot disable takeover.
+    let session = null;
+    try {
+      session = await requestSession(controller.signal);
+    } catch (error) {
+      if (!(error instanceof AttachmentLimitError)) {
+        throw error;
+      }
+      credential = error.detachCredential;
+      if (!credential) {
+        setConnectionState('limited');
+        return;
+      }
+    }
     if (controller.signal.aborted) {
       return;
     }
-    clearDetachCredential();
+    if (!session) {
+      await detachOtherClientRequest(credential, controller.signal);
+      if (controller.signal.aborted) {
+        return;
+      }
+    }
     detachController = null;
-    await beginConnection({ resetBackoff: true });
+    await beginConnection({ resetBackoff: true, session });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       return;
     }
-    clearDetachCredential();
-    if (error instanceof StaleDetachCredentialError) {
-      await beginConnection({ resetBackoff: true });
-      return;
-    }
-    setConnectionState('error', { detail: conciseMessage(error?.message) });
+    const detail =
+      error instanceof StaleDetachCredentialError
+        ? error.status === 409
+          ? 'The other attachment changed. Choose detach again to take over the current client.'
+          : 'The detach request was rejected. Try again to request a fresh token.'
+        : conciseMessage(error?.message);
+    setConnectionState('limited', { detachCredential: credential, detail });
+    announce(detail);
   } finally {
     if (detachController === controller) {
       detachController = null;

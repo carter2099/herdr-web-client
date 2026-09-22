@@ -143,6 +143,8 @@ func (d *detachTokenStore) issue(attachment *activeAttachment, now time.Time) (s
 	d.pruneLocked(now)
 	for token, grant := range d.items {
 		if grant.attachment == attachment && grant.expiresAt.After(now) {
+			grant.expiresAt = now.Add(d.ttl)
+			d.items[token] = grant
 			return token, grant.expiresAt, nil
 		}
 	}

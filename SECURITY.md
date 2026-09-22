@@ -48,6 +48,8 @@ The server additionally uses exact origin/host checks, single-use nonces, one ac
 
 Taking over an attachment is an explicit same-origin `POST /api/detach`, not a side effect of checking availability. It requires the API marker, JSON content type, and a short-lived, single-use nonce bound to the specific conflicting attachment. Expired, replayed, or stale nonces cannot detach a replacement client. Success is returned only after that web-owned attachment has been torn down; failed cleanup quarantines the slot. Detachment never signals the Herdr server or its terminal panes. These controls prevent unintended cross-origin or stale-session takeover, but do not authorize users independently of the deployment's access boundary.
 
+The visible takeover action outlives its cached token: a user click first requests a current attachment-scoped grant with a renewed lifetime. No detach POST occurs automatically on expiry or on a rejected request. The fetch overrides referrer policy only for this same-origin POST to prevent WebKit from sending `Origin: null`; the server's exact-Origin validation is unchanged.
+
 The device masks are defense in depth rather than a complete device sandbox: a per-user service cannot enforce `PrivateDevices` on every supported host, and a nonstandard path or a top-level device created after an attachment starts can retain the service user's permissions. Deploy a separately engineered system service/account boundary if complete physical-device isolation is part of the threat model.
 
 ## Non-security support questions
