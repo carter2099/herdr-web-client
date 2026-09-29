@@ -81,6 +81,10 @@ The takeover button remains available while you wait. Tapping it first refreshes
 
 Completion notifications use Herdr's per-pane semantic status subscriptions, with snapshot reconciliation and subscription refresh when panes open or close. No terminal output is needed for a background agent's transition to `done`.
 
+On page load the browser requests its session and opens the WebSocket while the terminal font and xterm initialize. The socket opens only after a successful session response, and the `hello` that consumes the nonce and starts `herdr client` still waits for the fitted terminal grid. An attachment that drops after at least five seconds of use reconnects at once; one that fails sooner keeps the 1, 2, 4, 8, and 15 second backoff, and a page returning to the foreground skips any pending backoff.
+
+Bundle files under `/assets/` have content-hashed names and are cached as immutable; `index.html` and API responses stay `no-store`, so a release takes effect on the next page load and repeat visits download no script, stylesheet, or font bytes. The page preloads the terminal font and records `herdr:font-ready`, `herdr:terminal-ready`, `herdr:ready`, and `herdr:first-output` performance marks for inspection in browser developer tools.
+
 ## Troubleshooting
 
 - **The service exits immediately.** Read `journalctl --user -u herdr-web-client.service -e`. Startup fails closed on a missing required value, a non-HTTPS public origin, a non-loopback listener, or a non-absolute path.

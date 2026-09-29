@@ -3,6 +3,10 @@ import { Terminal } from '@xterm/xterm';
 import { handleOsc52Clipboard } from './clipboard.js';
 import { playCompletionPing } from './completion-audio.js';
 import {
+  closeUnusedSocket,
+  startInitialAttachment,
+} from './initial-attachment.js';
+import {
   applyTerminalInput,
   configureNaturalTextInput,
   correctionForTerminalInput,
@@ -29,6 +33,9 @@ const MAX_PENDING_OUTPUT_BYTES = 1024 * 1024;
 const FIT_DEBOUNCE_MS = 80;
 const HANDSHAKE_TIMEOUT_MS = 15_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+// A drop after this long retries at once; a shorter-lived attachment keeps
+// the backoff so a connection that fails right after ready cannot spin.
+const STABLE_ATTACHMENT_MS = 5_000;
 const COMPLETION_TOAST_MS = 6_000;
 const TOUCH_SCROLL_THRESHOLD_PX = 6;
 
@@ -38,6 +45,48 @@ const desktopPointer = window.matchMedia(
   '(min-width: 48rem) and (pointer: fine)',
 );
 const CompletionAudioContext = window.AudioContext || window.webkitAudioContext;
+
+function fetchSession(signal) {
+  return fetch(SESSION_PATH, {
+    method: 'GET',
+    mode: 'same-origin',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    redirect: 'manual',
+    headers: {
+      Accept: 'application/json',
+      'X-Herdr-Web-Client-Request': 'session',
+    },
+    signal,
+  });
+}
+
+function attachURL() {
+  const url = new URL(ATTACH_PATH, window.location.href);
+  if (url.protocol === 'https:') {
+    url.protocol = 'wss:';
+  } else if (url.protocol === 'http:') {
+    url.protocol = 'ws:';
+  } else {
+    throw new Error('Herdr requires an HTTP or HTTPS origin.');
+  }
+  return url.href;
+}
+
+function openAttachSocket() {
+  const websocket = new WebSocket(attachURL(), ATTACH_PROTOCOL);
+  websocket.binaryType = 'arraybuffer';
+  return websocket;
+}
+
+// Start the first attachment's network round trips before waiting for the
+// font; the hello that starts the terminal still waits for a fitted grid.
+const initialAttachment = navigator.onLine
+  ? startInitialAttachment({
+      requestSession: fetchSession,
+      openSocket: openAttachSocket,
+    })
+  : null;
 
 // Load one patched monospace face for text and symbols before xterm measures the grid.
 // A symbol-only fallback has wider advances than xterm's text cells and gets clipped.
@@ -51,6 +100,7 @@ if (document.fonts?.load) {
     // Keep the terminal usable with its ordinary monospace fallbacks if the font request fails.
   }
 }
+performance.mark('herdr:font-ready');
 
 function elementById(id) {
   const element = document.getElementById(id);
@@ -139,6 +189,7 @@ const terminal = new Terminal({
 const fitAddon = new FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.open(terminalElement);
+performance.mark('herdr:terminal-ready');
 
 // Herdr forwards copy-on-select through OSC 52. Keep hyperlink OSC disabled,
 // but bridge clipboard writes to the browser that owns this terminal.
@@ -790,7 +841,7 @@ function stopCurrentTransport(reason) {
   }
 }
 
-function scheduleReconnect() {
+function scheduleReconnect({ immediate = false } = {}) {
   if (manuallyDetached) {
     clearReconnectTimers();
     return;
@@ -805,6 +856,12 @@ function scheduleReconnect() {
   }
   if (!navigator.onLine) {
     setConnectionState('offline');
+    return;
+  }
+  if (immediate) {
+    // A long-lived attachment retries at once; if that retry fails, the
+    // ordinary backoff applies because only a ready attachment resets it.
+    void beginConnection({ automatic: true });
     return;
   }
 
@@ -1055,21 +1112,10 @@ function parseDetachCredential(payload) {
   return { nonce: payload.detach_nonce };
 }
 
-async function requestSession(signal) {
+async function requestSession(signal, pendingResponse = null) {
   let response;
   try {
-    response = await fetch(SESSION_PATH, {
-      method: 'GET',
-      mode: 'same-origin',
-      credentials: 'same-origin',
-      cache: 'no-store',
-      redirect: 'manual',
-      headers: {
-        Accept: 'application/json',
-        'X-Herdr-Web-Client-Request': 'session',
-      },
-      signal,
-    });
+    response = await (pendingResponse ?? fetchSession(signal));
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error;
@@ -1190,18 +1236,6 @@ async function detachOtherClientRequest(credential, signal) {
   }
 }
 
-function attachURL() {
-  const url = new URL(ATTACH_PATH, window.location.href);
-  if (url.protocol === 'https:') {
-    url.protocol = 'wss:';
-  } else if (url.protocol === 'http:') {
-    url.protocol = 'ws:';
-  } else {
-    throw new Error('Herdr requires an HTTP or HTTPS origin.');
-  }
-  return url.href;
-}
-
 function protocolFailure(context, websocket, detail) {
   context.finalState = { state: 'error', detail };
   setConnectionState('error', { detail });
@@ -1274,6 +1308,8 @@ function handleServerControl(context, websocket, data) {
         return;
       }
       context.ready = true;
+      context.readyAt = performance.now();
+      performance.mark('herdr:ready');
       clearHandshakeTimer();
       reconnectAttempt = 0;
       setConnectionState('ready');
@@ -1392,6 +1428,10 @@ function writeServerOutput(context, websocket, data) {
         0,
         context.pendingOutputBytes - payload.byteLength,
       );
+      if (!context.outputWritten) {
+        context.outputWritten = true;
+        performance.mark('herdr:first-output');
+      }
     });
   } catch {
     protocolFailure(
@@ -1402,13 +1442,18 @@ function writeServerOutput(context, websocket, data) {
   }
 }
 
-function openAttachment(session, generation, automatic) {
+function openAttachment(session, generation, automatic, earlySocket = null) {
   let websocket;
-  try {
-    websocket = new WebSocket(attachURL(), ATTACH_PROTOCOL);
-  } catch (error) {
-    setConnectionState('error', { detail: conciseMessage(error?.message) });
-    return;
+  if (earlySocket && earlySocket.readyState <= WebSocket.OPEN) {
+    websocket = earlySocket;
+  } else {
+    closeUnusedSocket(earlySocket);
+    try {
+      websocket = openAttachSocket();
+    } catch (error) {
+      setConnectionState('error', { detail: conciseMessage(error?.message) });
+      return;
+    }
   }
 
   const context = {
@@ -1416,10 +1461,11 @@ function openAttachment(session, generation, automatic) {
     finalState: null,
     automatic,
     pendingOutputBytes: 0,
+    readyAt: 0,
+    outputWritten: false,
   };
 
   socket = websocket;
-  websocket.binaryType = 'arraybuffer';
   handshakeTimer = window.setTimeout(() => {
     if (
       socket === websocket &&
@@ -1430,7 +1476,7 @@ function openAttachment(session, generation, automatic) {
     }
   }, HANDSHAKE_TIMEOUT_MS);
 
-  websocket.addEventListener('open', () => {
+  const sendHello = () => {
     if (
       socket !== websocket ||
       generation !== connectionGeneration ||
@@ -1465,7 +1511,8 @@ function openAttachment(session, generation, automatic) {
     } catch {
       failAndReconnect();
     }
-  });
+  };
+  websocket.addEventListener('open', sendHello);
 
   websocket.addEventListener('message', (event) => {
     if (socket !== websocket || generation !== connectionGeneration) {
@@ -1538,18 +1585,28 @@ function openAttachment(session, generation, automatic) {
     if (manuallyDetached) {
       return;
     }
-    scheduleReconnect();
+    scheduleReconnect({
+      immediate:
+        context.ready &&
+        performance.now() - context.readyAt >= STABLE_ATTACHMENT_MS,
+    });
   });
 
   websocket.addEventListener('error', () => {
     // Browsers intentionally hide WebSocket handshake details; close handles retry state.
   });
+
+  // A socket opened while the page was still loading has already fired open.
+  if (websocket.readyState === WebSocket.OPEN) {
+    sendHello();
+  }
 }
 
 async function beginConnection({
   automatic = false,
   resetBackoff = false,
   session = null,
+  prefetched = null,
 } = {}) {
   if (automatic && manuallyDetached) {
     return;
@@ -1566,16 +1623,18 @@ async function beginConnection({
     reconnectAttempt = 0;
   }
   if (pageSuspended) {
+    prefetched?.discard();
     return;
   }
   if (!navigator.onLine) {
+    prefetched?.discard();
     setConnectionState('offline');
     return;
   }
 
   stopCurrentTransport('new connection');
   const generation = connectionGeneration;
-  sessionController = new AbortController();
+  sessionController = prefetched?.controller ?? new AbortController();
   setConnectionState('connecting', {
     detail: automatic
       ? 'Refreshing the terminal session…'
@@ -1584,13 +1643,17 @@ async function beginConnection({
 
   try {
     const connectionSession =
-      session || (await requestSession(sessionController.signal));
+      session ||
+      (await requestSession(sessionController.signal, prefetched?.response));
+    const earlySocket = prefetched ? await prefetched.socket : null;
     if (generation !== connectionGeneration || pageSuspended) {
+      closeUnusedSocket(earlySocket);
       return;
     }
     sessionController = null;
-    openAttachment(connectionSession, generation, automatic);
+    openAttachment(connectionSession, generation, automatic, earlySocket);
   } catch (error) {
+    prefetched?.discard();
     if (
       generation !== connectionGeneration ||
       (error instanceof DOMException && error.name === 'AbortError')
@@ -1874,8 +1937,16 @@ window.addEventListener('pageshow', (event) => {
   }
 });
 
+document.addEventListener('visibilitychange', () => {
+  // Hidden pages throttle timers, so a backoff that began in the background
+  // must not keep the user waiting once the page is visible again.
+  if (document.visibilityState === 'visible' && reconnectTimer !== null) {
+    void beginConnection({ automatic: true, resetBackoff: true });
+  }
+});
+
 syncVisualViewport();
 scheduleFit(true);
 syncScreenReaderButton();
 setConnectionState('connecting');
-void beginConnection();
+void beginConnection({ prefetched: initialAttachment });

@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 
-import { expect, test } from 'playwright/test';
+import { chromium, expect, test } from 'playwright/test';
 import { startHerdrFixture } from './fixture.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,22 @@ async function waitForState(fixture, predicate, message) {
       intervals: [25, 50, 100, 250, 500],
       message,
     })
+    .toBe(true);
+}
+
+async function waitForProcessExit(pid) {
+  await expect
+    .poll(
+      () => {
+        try {
+          process.kill(pid, 0);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+      { timeout: 10_000, intervals: [25, 50, 100, 250] },
+    )
     .toBe(true);
 }
 
@@ -692,19 +709,7 @@ e2e(
     const start = latestClientStart(before);
     const childPID = start.pid;
     await page.close();
-    await expect
-      .poll(
-        () => {
-          try {
-            process.kill(childPID, 0);
-            return false;
-          } catch {
-            return true;
-          }
-        },
-        { timeout: 10_000, intervals: [25, 50, 100, 250] },
-      )
-      .toBe(true);
+    await waitForProcessExit(childPID);
     await waitForState(
       herdr,
       (state) => state.websocket_closed >= 1,
@@ -712,5 +717,172 @@ e2e(
     );
     const after = await herdr.state();
     expect(after.target_exited).toBe(false);
+  },
+);
+
+// Chromium never caches responses from a host with a certificate error, so
+// cache-sensitive checks launch a browser that trusts exactly the fixture key.
+async function launchFixtureTrustingBrowser(fixture) {
+  const { hostname, port } = new URL(fixture.origin);
+  const certificate = await new Promise((resolve, reject) => {
+    const socket = tls.connect(
+      { host: hostname, port: Number(port), rejectUnauthorized: false },
+      () => {
+        resolve(socket.getPeerCertificate().raw);
+        socket.end();
+      },
+    );
+    socket.once('error', reject);
+  });
+  const publicKey = new X509Certificate(certificate).publicKey.export({
+    type: 'spki',
+    format: 'der',
+  });
+  const pin = createHash('sha256').update(publicKey).digest('base64');
+  return chromium.launch({
+    args: [`--ignore-certificate-errors-spki-list=${pin}`],
+  });
+}
+
+// Each network request waits this long for its response headers. It dwarfs
+// page CPU time, so elapsed time divided by it counts sequential round trips.
+const EMULATED_ROUND_TRIP_MS = 1_500;
+
+async function visitUntilFirstOutput(context, fixture) {
+  const page = await context.newPage();
+  const session = await context.newCDPSession(page);
+  await session.send('Network.enable');
+  await session.send('Network.emulateNetworkConditions', {
+    offline: false,
+    latency: EMULATED_ROUND_TRIP_MS,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+  await page.goto(`${fixture.origin}/`, { waitUntil: 'commit' });
+  const firstOutput = await (
+    await page.waitForFunction(
+      () => performance.getEntriesByName('herdr:first-output')[0]?.startTime,
+      null,
+      { timeout: 30_000 },
+    )
+  ).jsonValue();
+  const resources = await page.evaluate(() =>
+    performance.getEntriesByType('resource').map((entry) => ({
+      path: new URL(entry.name).pathname,
+      startTime: entry.startTime,
+      responseEnd: entry.responseEnd,
+      transferSize: entry.transferSize,
+    })),
+  );
+  return {
+    page,
+    resources,
+    roundTrips: Math.floor(firstOutput / EMULATED_ROUND_TRIP_MS),
+  };
+}
+
+e2e(
+  '@desktop cold and repeat visits stay within their round-trip and download budgets',
+  async ({ herdr }) => {
+    const browser = await launchFixtureTrustingBrowser(herdr);
+    try {
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+      });
+
+      // Cold: HTML, then the bundle with the preloaded font, then the session
+      // request and WebSocket handshake started while the font loads.
+      const cold = await visitUntilFirstOutput(context, herdr);
+      expect(
+        cold.roundTrips,
+        'cold visit sequential round trips before terminal output',
+      ).toBeLessThanOrEqual(4);
+      const script = cold.resources.find(({ path }) =>
+        /^\/assets\/app-[A-Z0-9]+\.js$/.test(path),
+      );
+      const font = cold.resources.find(({ path }) => path.endsWith('.ttf'));
+      expect(
+        font.startTime,
+        'the terminal font must download alongside the script',
+      ).toBeLessThan(script.responseEnd);
+
+      const coldChildPID = latestClientStart(await herdr.state()).pid;
+      await cold.page.close();
+      await waitForProcessExit(coldChildPID);
+      await waitForState(
+        herdr,
+        (state) => state.websocket_closed >= 1,
+        'the cold visit attachment must end before the repeat visit',
+      );
+
+      // Repeat: HTML, the session request, and the WebSocket handshake only.
+      const repeat = await visitUntilFirstOutput(context, herdr);
+      expect(
+        repeat.roundTrips,
+        'repeat visit sequential round trips before terminal output',
+      ).toBeLessThanOrEqual(3);
+      const assets = repeat.resources.filter(({ path }) =>
+        path.startsWith('/assets/'),
+      );
+      expect(assets.map(({ path }) => path)).toHaveLength(3);
+      for (const asset of assets) {
+        expect(asset.transferSize, `${asset.path} bytes on repeat`).toBe(0);
+      }
+    } finally {
+      await browser.close();
+    }
+  },
+);
+
+e2e(
+  '@desktop a dropped long-lived attachment retries at once while a short-lived one backs off',
+  async ({ page, herdr }) => {
+    await page.addInitScript(() => {
+      window.herdrTestSockets = [];
+      window.herdrTestSessionRequests = [];
+      const NativeWebSocket = window.WebSocket;
+      window.WebSocket = class extends NativeWebSocket {
+        constructor(...parameters) {
+          super(...parameters);
+          window.herdrTestSockets.push(this);
+        }
+      };
+      const nativeFetch = window.fetch;
+      window.fetch = function (input, ...parameters) {
+        if (String(input?.url ?? input).endsWith('/api/session')) {
+          window.herdrTestSessionRequests.push(performance.now());
+        }
+        return nativeFetch.call(this, input, ...parameters);
+      };
+    });
+    await openReady(page, herdr);
+
+    const retryDelayAfterDrop = async () => {
+      const before = await page.evaluate(
+        () => window.herdrTestSessionRequests.length,
+      );
+      const droppedAt = await page.evaluate(() => {
+        window.herdrTestSockets.at(-1).close(4000, 'test transport drop');
+        return performance.now();
+      });
+      await expect
+        .poll(() => page.evaluate(() => window.herdrTestSessionRequests.length))
+        .toBeGreaterThan(before);
+      const requestedAt = await page.evaluate(
+        (index) => window.herdrTestSessionRequests[index],
+        before,
+      );
+      await expect(page.locator('#app')).toHaveAttribute(
+        'data-connection',
+        'ready',
+      );
+      return requestedAt - droppedAt;
+    };
+
+    // A drop right after ready keeps the one-second backoff.
+    expect(await retryDelayAfterDrop()).toBeGreaterThanOrEqual(900);
+    // After five seconds of ready the attachment counts as long-lived.
+    await page.waitForTimeout(5_500);
+    expect(await retryDelayAfterDrop()).toBeLessThan(500);
   },
 );

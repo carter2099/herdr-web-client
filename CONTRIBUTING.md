@@ -50,6 +50,8 @@ scripts/verify-full
 
 `verify-full` includes pinned static analysis and workflow validation, race testing, tagged compilation, secret scanning, deterministic release-package and sandbox-install checks, Chromium desktop/mobile E2E, and mobile WebKit takeover regressions against the exact built binary. The E2E must exercise that binary and its embedded bundle through the local TLS fixture; do not replace it with a test-only bypass route. Current vulnerability feeds and extended randomized fuzzing run nightly and on manual dispatch, not as mutable PR gates.
 
+The browser suite also enforces startup budgets. Under 1.5 seconds of emulated latency per request, a cold page load must show terminal output within four sequential round trips and a repeat load within three, downloading no bundle bytes. Treat these limits as ratchets: lower them when a change removes a round trip, and do not raise them to accommodate a change.
+
 The required pull-request merge status is `CI / verify`; `main` runs the same workflow after merge. Run focused tests while iterating, `scripts/verify` before pushing, and `scripts/verify-full` for the sensitive changes listed above and every release. Do not weaken or skip a layer to accommodate a change.
 
 ## Make changes safely

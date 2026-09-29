@@ -5,6 +5,8 @@ const expectedByProject = {
     '@desktop @mobile @takeover an expired displayed token leaves a usable takeover action',
     '@desktop a crashed Herdr client reports its exit and can start a fresh attachment',
     '@desktop closing the attachment cancels and reaps only its target child',
+    '@desktop cold and repeat visits stay within their round-trip and download budgets',
+    '@desktop a dropped long-lived attachment retries at once while a short-lived one backs off',
   ],
   'chromium-mobile': [
     '@mobile terminal taps and Type use native input without control refocus',
