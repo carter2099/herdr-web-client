@@ -15,6 +15,14 @@ import {
   usesNativeMobileTextInput,
 } from './mobile-input.js';
 import { SHIFT_ENTER_SEQUENCE, shiftEnterAction } from './terminal-input.js';
+import {
+  createScrollStepper,
+  createVelocityTracker,
+  MIN_FLING_VELOCITY,
+  MIN_MOMENTUM_VELOCITY,
+  momentumStep,
+  wheelEventPixels,
+} from './touch-scroll.js';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 
@@ -38,6 +46,12 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
 const STABLE_ATTACHMENT_MS = 5_000;
 const COMPLETION_TOAST_MS = 6_000;
 const TOUCH_SCROLL_THRESHOLD_PX = 6;
+// Rows Herdr scrolls a pane per wheel report: its default ui.mouse_scroll_lines.
+const HERDR_WHEEL_ROWS = 3;
+// Guards against a page-sized delta flooding the terminal with reports.
+const MAX_WHEEL_STEPS_PER_EVENT = 20;
+// Throttled or backgrounded frames must not turn into one large jump.
+const MAX_MOMENTUM_FRAME_MS = 50;
 
 const textEncoder = new TextEncoder();
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -481,6 +495,140 @@ function terminalHasFocus() {
     document.activeElement && terminalElement.contains(document.activeElement),
   );
 }
+
+const touchVelocity = createVelocityTracker();
+const applicationScrollSteps = createScrollStepper();
+const wheelStepEvents = new WeakSet();
+let scrollMomentum = null;
+
+function terminalScreen() {
+  const screen = terminalElement.querySelector('.xterm-screen');
+  return screen instanceof HTMLElement ? screen : null;
+}
+
+// xterm consults the custom wheel handler only when the application in the
+// terminal scrolls: through wheel reports (Herdr) or, in an alternate screen
+// without them, through one cursor key per wheel event.
+function applicationScrollRows() {
+  const mode = terminal.modes.mouseTrackingMode;
+  return mode === 'vt200' || mode === 'drag' || mode === 'any'
+    ? HERDR_WHEEL_ROWS
+    : 1;
+}
+
+function dispatchWheelSteps(steps, clientX, clientY) {
+  const screen = terminalScreen();
+  if (!screen) {
+    return;
+  }
+  const count = Math.min(Math.abs(steps), MAX_WHEEL_STEPS_PER_EVENT);
+  for (let step = 0; step < count; step += 1) {
+    const wheelStep = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      clientX,
+      clientY,
+      deltaMode: WheelEvent.DOM_DELTA_LINE,
+      deltaY: Math.sign(steps),
+      view: window,
+    });
+    wheelStepEvents.add(wheelStep);
+    screen.dispatchEvent(wheelStep);
+  }
+}
+
+// xterm sends one application report per wheel event however far the event
+// moved, and damps small pixel deltas, so touch and trackpad scrolling lagged
+// the finger and fast flicks were capped. Convert the distance into whole
+// steps instead, one line-mode event per step, so content tracks the input.
+terminal.attachCustomWheelEventHandler((event) => {
+  if (
+    wheelStepEvents.has(event) ||
+    event.deltaY === 0 ||
+    event.shiftKey ||
+    event.ctrlKey ||
+    event.altKey ||
+    event.metaKey
+  ) {
+    return true;
+  }
+  const screen = terminalScreen();
+  const rowHeight =
+    screen && terminal.rows > 0
+      ? screen.getBoundingClientRect().height / terminal.rows
+      : 0;
+  if (rowHeight <= 0) {
+    return true;
+  }
+  const steps = applicationScrollSteps.take(
+    wheelEventPixels(event, rowHeight, terminal.rows),
+    applicationScrollRows() * rowHeight,
+  );
+  dispatchWheelSteps(steps, event.clientX, event.clientY);
+  return false;
+});
+
+function scrollTerminalBy(deltaY, clientX, clientY) {
+  const screen = terminalScreen();
+  if (!screen || deltaY === 0) {
+    return;
+  }
+  // xterm 6.0's virtual viewport handles wheel input but does not forward
+  // touch gestures. Reuse its wheel path so scrollback, alternate buffers,
+  // and terminal mouse reporting retain xterm's native behavior.
+  const wheelEvent = new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    clientX,
+    clientY,
+    deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+    deltaY,
+    view: window,
+  });
+  // xterm's wheel normalizer checks the legacy field first. Constructed wheel
+  // events expose it as zero unless the matching value is supplied explicitly.
+  Object.defineProperty(wheelEvent, 'wheelDeltaY', { value: -deltaY });
+  screen.dispatchEvent(wheelEvent);
+}
+
+function stopScrollMomentum() {
+  if (scrollMomentum === null) {
+    return false;
+  }
+  window.cancelAnimationFrame(scrollMomentum.frame);
+  scrollMomentum = null;
+  return true;
+}
+
+// A released flick keeps scrolling and decelerates like native scrolling.
+function startScrollMomentum(velocity, clientX, clientY) {
+  stopScrollMomentum();
+  if (Math.abs(velocity) < MIN_FLING_VELOCITY) {
+    return;
+  }
+  const momentum = { velocity, time: performance.now(), frame: 0 };
+  const advance = (time) => {
+    if (scrollMomentum !== momentum) {
+      return;
+    }
+    const elapsed = Math.min(
+      Math.max(time - momentum.time, 0),
+      MAX_MOMENTUM_FRAME_MS,
+    );
+    momentum.time = time;
+    const step = momentumStep(momentum.velocity, elapsed);
+    momentum.velocity = step.velocity;
+    scrollTerminalBy(step.distance, clientX, clientY);
+    if (Math.abs(momentum.velocity) < MIN_MOMENTUM_VELOCITY) {
+      scrollMomentum = null;
+      return;
+    }
+    momentum.frame = window.requestAnimationFrame(advance);
+  };
+  scrollMomentum = momentum;
+  momentum.frame = window.requestAnimationFrame(advance);
+}
+
 function beginTerminalPointer(event) {
   if (
     desktopPointer.matches ||
@@ -494,9 +642,12 @@ function beginTerminalPointer(event) {
     pointerId: event.pointerId,
     initialX: event.clientX,
     initialY: event.clientY,
+    lastX: event.clientX,
     lastY: event.clientY,
     scrolling: false,
   };
+  touchVelocity.reset(event.timeStamp, event.clientY);
+  applicationScrollSteps.reset();
 }
 
 function moveTerminalPointer(event) {
@@ -508,6 +659,7 @@ function moveTerminalPointer(event) {
   ) {
     return;
   }
+  touchVelocity.add(event.timeStamp, event.clientY);
 
   if (!terminalPointerGesture.scrolling) {
     const horizontalTravel = event.clientX - terminalPointerGesture.initialX;
@@ -523,38 +675,25 @@ function moveTerminalPointer(event) {
   }
 
   const deltaY = terminalPointerGesture.lastY - event.clientY;
+  terminalPointerGesture.lastX = event.clientX;
   terminalPointerGesture.lastY = event.clientY;
   event.preventDefault();
   event.stopPropagation();
-  if (deltaY === 0) {
-    return;
-  }
-
-  const screen = terminalElement.querySelector('.xterm-screen');
-  if (!(screen instanceof HTMLElement)) {
-    return;
-  }
-  // xterm 6.0's virtual viewport handles wheel input but does not forward
-  // touch gestures. Reuse its wheel path so scrollback, alternate buffers,
-  // and terminal mouse reporting retain xterm's native behavior.
-  const wheelEvent = new WheelEvent('wheel', {
-    bubbles: true,
-    cancelable: true,
-    clientX: event.clientX,
-    clientY: event.clientY,
-    deltaMode: WheelEvent.DOM_DELTA_PIXEL,
-    deltaY,
-    view: window,
-  });
-  // xterm's wheel normalizer checks the legacy field first. Constructed wheel
-  // events expose it as zero unless the matching value is supplied explicitly.
-  Object.defineProperty(wheelEvent, 'wheelDeltaY', { value: -deltaY });
-  screen.dispatchEvent(wheelEvent);
+  scrollTerminalBy(deltaY, event.clientX, event.clientY);
 }
 
 function endTerminalPointer(event) {
-  if (event.pointerId === terminalPointerGesture?.pointerId) {
-    terminalPointerGesture = null;
+  const gesture = terminalPointerGesture;
+  if (event.pointerId !== gesture?.pointerId) {
+    return;
+  }
+  terminalPointerGesture = null;
+  if (event.type === 'pointerup' && gesture.scrolling) {
+    startScrollMomentum(
+      touchVelocity.releaseVelocity(event.timeStamp),
+      gesture.lastX,
+      gesture.lastY,
+    );
   }
 }
 
@@ -823,6 +962,7 @@ function stopCurrentTransport(reason) {
   if (connectionState === 'ready' && terminalHasFocus()) {
     restoreDesktopTerminalFocus = true;
   }
+  stopScrollMomentum();
   connectionGeneration += 1;
   sessionController?.abort();
   sessionController = null;
@@ -1773,6 +1913,18 @@ connectionAction.addEventListener('click', () => {
 detachAction.addEventListener('click', () => {
   void detachAndConnect();
 });
+// Touching the page or typing stops a fling, like native scrolling. A touch
+// on the terminal that only stops it must not also click or open the keyboard.
+document.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (stopScrollMomentum() && terminalElement.contains(event.target)) {
+      event.preventDefault();
+    }
+  },
+  { capture: true },
+);
+document.addEventListener('keydown', stopScrollMomentum, { capture: true });
 terminalElement.addEventListener('pointerdown', beginTerminalPointer, {
   passive: true,
 });
@@ -1938,9 +2090,13 @@ window.addEventListener('pageshow', (event) => {
 });
 
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    stopScrollMomentum();
+    return;
+  }
   // Hidden pages throttle timers, so a backoff that began in the background
   // must not keep the user waiting once the page is visible again.
-  if (document.visibilityState === 'visible' && reconnectTimer !== null) {
+  if (reconnectTimer !== null) {
     void beginConnection({ automatic: true, resetBackoff: true });
   }
 });

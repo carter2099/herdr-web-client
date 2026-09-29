@@ -85,6 +85,8 @@ On page load the browser requests its session and opens the WebSocket while the 
 
 Bundle files under `/assets/` have content-hashed names and are cached as immutable; `index.html` and API responses stay `no-store`, so a release takes effect on the next page load and repeat visits download no script, stylesheet, or font bytes. The page preloads the terminal font and records `herdr:font-ready`, `herdr:terminal-ready`, `herdr:ready`, and `herdr:first-output` performance marks for inspection in browser developer tools.
 
+Scrolling follows the input distance. When the terminal application scrolls (Herdr's mouse reporting, or cursor keys in an alternate screen), wheel and touch travel become one report per three rows, Herdr's default `ui.mouse_scroll_lines`, so content moves with the finger or trackpad instead of lagging it, and a large wheel delta is no longer capped at one report. A released touch flick keeps scrolling and decelerates like native scrolling; any touch or key press stops it, and the touch that stops it is not passed to the terminal as a click. With a different `ui.mouse_scroll_lines`, scrolling still works but no longer tracks one to one.
+
 ## Troubleshooting
 
 - **The service exits immediately.** Read `journalctl --user -u herdr-web-client.service -e`. Startup fails closed on a missing required value, a non-HTTPS public origin, a non-loopback listener, or a non-absolute path.

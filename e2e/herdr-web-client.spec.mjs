@@ -662,6 +662,160 @@ e2e(
   },
 );
 
+// SGR mouse report prefixes: wheel up, wheel down, and primary button.
+const WHEEL_UP = '\u001b[<64;';
+const WHEEL_DOWN = '\u001b[<65;';
+const WHEEL_REPORTS = [WHEEL_UP, WHEEL_DOWN];
+const PRIMARY_BUTTON_REPORTS = ['\u001b[<0;'];
+
+function reportCount(state, prefixes) {
+  const input = decodedInputs(state).join('');
+  return prefixes.reduce(
+    (total, prefix) => total + input.split(prefix).length - 1,
+    0,
+  );
+}
+
+// Switches the fixture to Herdr's terminal modes and returns the finger
+// distance one wheel report scrolls: three terminal rows.
+async function enterMouseReporting(page, fixture, focusTerminal) {
+  await focusTerminal();
+  await page.keyboard.insertText('fixture-mouse');
+  await expect(page.locator('#terminal .xterm-rows')).toContainText(
+    'FIXTURE_MOUSE_READY',
+  );
+  await waitForState(
+    fixture,
+    (state) => decodedInputs(state).join('').includes('fixture-mouse'),
+    'the mouse fixture trigger must reach the terminal',
+  );
+  return page.evaluate(() => {
+    const screen = document.querySelector('#terminal .xterm-screen');
+    const rows = document.querySelectorAll('#terminal .xterm-rows > div');
+    return (3 * screen.getBoundingClientRect().height) / rows.length;
+  });
+}
+
+async function settledReportCount(fixture, pattern) {
+  let previous = -1;
+  let current = reportCount(await fixture.state(), pattern);
+  while (current !== previous) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    previous = current;
+    current = reportCount(await fixture.state(), pattern);
+  }
+  return current;
+}
+
+async function dragTerminal(page, { distance, moves, intervalMs, restMs }) {
+  const start = await terminalPoint(page, 0.15);
+  const session = await page.context().newCDPSession(page);
+  try {
+    await session.send('Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ ...start, id: 1, force: 1 }],
+    });
+    for (let move = 1; move <= moves; move += 1) {
+      await page.waitForTimeout(intervalMs);
+      await session.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+          {
+            x: start.x,
+            y: start.y + (distance * move) / moves,
+            id: 1,
+            force: 1,
+          },
+        ],
+      });
+    }
+    await page.waitForTimeout(restMs);
+    await session.send('Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [],
+    });
+  } finally {
+    await session.detach();
+  }
+}
+
+e2e(
+  '@mobile touch scrolling in Herdr tracks the finger, glides after a flick, and stops on touch',
+  async ({ page, herdr }) => {
+    await openReady(page, herdr);
+    const stepPx = await enterMouseReporting(page, herdr, () =>
+      tapTerminal(page),
+    );
+
+    // A drag that rests before lifting moves content with the finger.
+    let before = await settledReportCount(herdr, WHEEL_REPORTS);
+    await dragTerminal(page, {
+      distance: stepPx * 6.5,
+      moves: 26,
+      intervalMs: 16,
+      restMs: 300,
+    });
+    expect((await settledReportCount(herdr, WHEEL_REPORTS)) - before).toBe(6);
+
+    // A flick keeps scrolling after release.
+    before = await settledReportCount(herdr, WHEEL_REPORTS);
+    await dragTerminal(page, {
+      distance: stepPx * 2.5,
+      moves: 5,
+      intervalMs: 16,
+      restMs: 0,
+    });
+    expect(
+      (await settledReportCount(herdr, WHEEL_REPORTS)) - before,
+    ).toBeGreaterThanOrEqual(4);
+
+    // A touch during the glide stops it without clicking in Herdr.
+    const pressesBefore = reportCount(
+      await herdr.state(),
+      PRIMARY_BUTTON_REPORTS,
+    );
+    await dragTerminal(page, {
+      distance: stepPx * 4,
+      moves: 4,
+      intervalMs: 16,
+      restMs: 0,
+    });
+    await page.waitForTimeout(150);
+    await tapTerminal(page);
+    const stoppedAt = await settledReportCount(herdr, WHEEL_REPORTS);
+    await page.waitForTimeout(1_000);
+    const after = await herdr.state();
+    expect(reportCount(after, WHEEL_REPORTS)).toBe(stoppedAt);
+    expect(reportCount(after, PRIMARY_BUTTON_REPORTS)).toBe(pressesBefore);
+  },
+);
+
+e2e(
+  '@desktop wheel scrolling in Herdr moves as far as the wheel delta',
+  async ({ page, herdr }) => {
+    await openReady(page, herdr);
+    const stepPx = await enterMouseReporting(page, herdr, () =>
+      page.locator('#terminal textarea').focus(),
+    );
+    const screen = await page.locator('#terminal .xterm-screen').boundingBox();
+    await page.mouse.move(
+      screen.x + screen.width / 2,
+      screen.y + screen.height / 2,
+    );
+
+    const before = await herdr.state();
+    await page.mouse.wheel(0, stepPx * 6.5);
+    await settledReportCount(herdr, WHEEL_REPORTS);
+    const after = await herdr.state();
+    expect(
+      reportCount(after, [WHEEL_DOWN]) - reportCount(before, [WHEEL_DOWN]),
+    ).toBe(6);
+    expect(reportCount(after, [WHEEL_UP])).toBe(
+      reportCount(before, [WHEEL_UP]),
+    );
+  },
+);
+
 e2e(
   '@desktop a crashed Herdr client reports its exit and can start a fresh attachment',
   async ({ page, herdr }) => {

@@ -7,12 +7,14 @@ const expectedByProject = {
     '@desktop closing the attachment cancels and reaps only its target child',
     '@desktop cold and repeat visits stay within their round-trip and download budgets',
     '@desktop a dropped long-lived attachment retries at once while a short-lived one backs off',
+    '@desktop wheel scrolling in Herdr moves as far as the wheel delta',
   ],
   'chromium-mobile': [
     '@mobile terminal taps and Type use native input without control refocus',
     '@desktop @mobile @takeover an explicit detach takes over safely and leaves the displaced page detached',
     '@desktop @mobile @takeover an expired displayed token leaves a usable takeover action',
     '@mobile touch gestures scroll terminal history',
+    '@mobile touch scrolling in Herdr tracks the finger, glides after a flick, and stops on touch',
   ],
   'webkit-mobile': [
     '@desktop @mobile @takeover an explicit detach takes over safely and leaves the displaced page detached',

@@ -140,6 +140,9 @@ func runFakeClient() int {
 	clipboardTrigger := []byte("fixture-copy")
 	clipboardText := []byte("fixture clipboard text")
 	scrollTrigger := []byte("fixture-scroll")
+	// Like Herdr, switch to the alternate screen with SGR mouse reporting so
+	// wheel input arrives as terminal reports instead of local scrollback.
+	mouseTrigger := []byte("fixture-mouse")
 	triggerTail := make([]byte, 0, len(scrollTrigger)-1)
 	for {
 		select {
@@ -167,6 +170,9 @@ func runFakeClient() int {
 				for line := range 120 {
 					_, _ = fmt.Fprintf(os.Stdout, "FIXTURE_SCROLL_LINE:%03d\r\n", line)
 				}
+			}
+			if bytes.Contains(triggerWindow, mouseTrigger) {
+				_, _ = io.WriteString(os.Stdout, "\x1b[?1049h\x1b[?1000h\x1b[?1006hFIXTURE_MOUSE_READY\r\n")
 			}
 			if bytes.Contains(triggerWindow, clipboardTrigger) {
 				encodedClipboard := base64.StdEncoding.EncodeToString(clipboardText)
