@@ -1,6 +1,6 @@
 module github.com/carter2099/herdr-web-client
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/creack/pty v1.1.24
