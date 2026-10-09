@@ -30,7 +30,8 @@ fi
 shellcheck scripts/* deploy/release.sh install.sh
 
 printf '%s\n' '== pinned static analysis =='
-go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+# staticcheck v0.8.1 cannot read Go 1.27.2's V5 export data (golang/go#81188).
+GOTOOLCHAIN=go1.27.1 go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
 
 printf '%s\n' '== pinned workflow validation =='
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.11

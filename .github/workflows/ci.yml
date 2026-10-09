@@ -83,6 +83,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run pinned static analysis
+        # staticcheck v0.8.1 cannot read the V5 export data Go 1.27.2 writes
+        # (golang/go#81188); analyze with go1.27.1 until a release can.
+        env:
+          GOTOOLCHAIN: go1.27.1
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: Run pinned shell analysis
         run: |
