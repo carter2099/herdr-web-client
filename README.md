@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/carter2099/herdr-web-client/main/in
 
 The script verifies the archive against the published `SHA256SUMS` and installs `~/.local/bin/herdr-web-client` and `~/.config/systemd/user/herdr-web-client.service`. It prepares an empty `~/.config/herdr-web-client/env` on a first install and never touches existing configuration. Reinstalling (same command, any version) replaces the binary and unit; finish an update with `systemctl --user daemon-reload && systemctl --user restart herdr-web-client.service`.
 
-From source (Bun exactly 1.3.14 and Go 1.27 required):
+From source (Bun exactly 1.4.4 and Go 1.27 required):
 
 ```sh
 git clone https://github.com/carter2099/herdr-web-client.git
@@ -98,7 +98,7 @@ Scrolling follows the input distance. When the terminal application scrolls (Her
 
 ## Development
 
-Bun exactly 1.3.14, Go 1.27, and ShellCheck exactly 0.10.0. `web/dist` is tracked generated output — rebuild it with `scripts/build` and commit it together with source changes.
+Bun exactly 1.4.4, Go 1.27, and ShellCheck exactly 0.10.0. `web/dist` is tracked generated output — rebuild it with `scripts/build` and commit it together with source changes.
 
 ```sh
 bun install --frozen-lockfile
