@@ -5,7 +5,7 @@ Thank you for improving the `herdr-web-client` source. Contributions should keep
 ## Before you start
 
 - Use a Linux development host when changing PTY, Unix-socket, systemd, or release behavior. The published support target is Linux `amd64` and `arm64`.
-- Install Go 1.27, Bun exactly 1.3.14, and ShellCheck exactly 0.10.0. Bun is pinned by `.bun-version` and the package metadata.
+- Install Go 1.27, Bun exactly 1.4.4, and ShellCheck exactly 0.10.0. Bun is pinned by `.bun-version` and the package metadata.
 - Read the README's access-control responsibility and transport contract before changing request headers, origins, WebSocket upgrades, or session behavior.
 - Never add Docker, a system-wide root service, or a browser compatibility claim unless the implementation and verification contract genuinely support it.
 
