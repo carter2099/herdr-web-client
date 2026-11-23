@@ -16,7 +16,7 @@
     "@xterm/xterm": "6.0.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.7",
+    "@biomejs/biome": "2.6.8",
     "esbuild": "0.28.2",
     "knip": "6.46.1",
     "playwright": "1.65.0"
