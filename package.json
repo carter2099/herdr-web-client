@@ -18,7 +18,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.7",
     "esbuild": "0.28.2",
-    "knip": "6.45.1",
+    "knip": "6.46.1",
     "playwright": "1.65.0"
   }
 }
