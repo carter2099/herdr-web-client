@@ -190,9 +190,10 @@ The following modules are direct dependencies of the executable. The binary also
 | Module | Version | Role | License |
 | --- | --- | --- | --- |
 | `github.com/creack/pty` | v1.1.24 | PTY allocation and I/O | MIT |
-| `github.com/gorilla/websocket` | v1.5.3 | WebSocket transport | BSD 2-Clause |
-| `golang.org/x/term` | v0.45.0 | Terminal support | BSD 3-Clause |
-| `golang.org/x/sys` | v0.47.0 | Runtime-transitive platform support | BSD 3-Clause |
+| `github.com/gorilla/websocket` | v1.5.4-0.20250319132907-e064f32e3674 | WebSocket transport | BSD 2-Clause |
+| `golang.org/x/term` | v0.48.0 | Terminal support | BSD 3-Clause |
+| `golang.org/x/net` | v0.63.0 | Runtime-transitive WebSocket client proxy support | BSD 3-Clause |
+| `golang.org/x/sys` | v0.50.0 | Runtime-transitive platform support | BSD 3-Clause |
 
 ### Apache License 2.0
 
