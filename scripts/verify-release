@@ -180,6 +180,7 @@ for arch in amd64 arm64; do
   for module_prefix in \
     github.com__creack__pty \
     github.com__gorilla__websocket \
+    golang.org__x__net \
     golang.org__x__sys \
     golang.org__x__term; do
     module_licenses=("$license_dir/${module_prefix}"@*-LICENSE*)
@@ -188,7 +189,7 @@ for arch in amd64 arm64; do
       exit 1
     fi
   done
-  for module_prefix in golang.org__x__sys golang.org__x__term; do
+  for module_prefix in golang.org__x__net golang.org__x__sys golang.org__x__term; do
     module_patents=("$license_dir/${module_prefix}"@*-PATENTS*)
     if [[ ${#module_patents[@]} != 1 || ! -s ${module_patents[0]} ]]; then
       printf 'archive lacks patent terms for linked module %s\n' "$module_prefix" >&2
